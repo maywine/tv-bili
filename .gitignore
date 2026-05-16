@@ -1,0 +1,45 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# Android / Kotlin build outputs
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+/app/release/
+/app/debug/
+captures/
+
+# IntelliJ / Android Studio
+.idea/
+*.iml
+*.iws
+*.ipr
+.cxx/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs
+*.log
+
+# Signing material — never commit
+*.jks
+*.keystore
+keystore.properties
+
+# Compose / R8 reports (transient)
+/app/compose_reports/
+/app/compose_metrics/
+
+# Baseline Profile generated outputs (regenerated per build)
+/app/src/main/baseline-prof.txt
+/app/src/main/baseline-prof.txt.bak
+
+.claude

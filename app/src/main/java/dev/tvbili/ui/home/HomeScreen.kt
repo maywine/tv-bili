@@ -1,0 +1,52 @@
+package dev.tvbili.ui.home
+
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.tvbili.data.repo.HomeCard
+
+@Composable
+fun HomeScreen(
+    onNavigateToSettings: () -> Unit,
+    onNavigateToVideo: (String) -> Unit,
+    onNavigateToLive: (Long) -> Unit,
+    onNavigateToSearch: () -> Unit,
+    onNavigateToProfile: () -> Unit,
+    modifier: Modifier = Modifier,
+    vm: HomeViewModel = viewModel(),
+) {
+    val sections by vm.sections.collectAsStateWithLifecycle()
+    val selected by vm.selectedSection.collectAsStateWithLifecycle()
+    val state by vm.stateOf(selected).collectAsStateWithLifecycle()
+    val pendingGridFocus by vm.pendingGridFocus.collectAsStateWithLifecycle()
+
+    Row(modifier = modifier.fillMaxSize()) {
+        SideBar(
+            sections = sections,
+            selected = selected,
+            onSelect = vm::selectSection,
+            onAvatarClick = onNavigateToProfile,
+            onSearchClick = onNavigateToSearch,
+            onSettingsClick = onNavigateToSettings,
+            suppressAutoFocus = pendingGridFocus,
+        )
+        ContentPane(
+            section = selected,
+            state = state,
+            onCardClick = { card ->
+                vm.markCardClicked()
+                when (card) {
+                    is HomeCard.Video -> onNavigateToVideo(card.bvid)
+                    is HomeCard.Live -> onNavigateToLive(card.roomId)
+                }
+            },
+            onRetry = { vm.retry(selected) },
+            pendingGridFocus = pendingGridFocus,
+            onConsumeGridFocus = vm::consumePendingGridFocus,
+        )
+    }
+}

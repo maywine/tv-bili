@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TV 启动器 banner (320×180 / 16:9)
+  品牌色：粉色渐变 #E91E63 → #FF6B9D
+  布局：底盘 + 居中圆形播放图标
+  App 名由 launcher 自动渲染在 banner 下方，不需要内嵌字
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <path android:pathData="M0,0h320v180h-320z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="180"
+                android:endX="320"
+                android:endY="0"
+                android:type="linear">
+                <item
+                    android:color="#FFE91E63"
+                    android:offset="0" />
+                <item
+                    android:color="#FFFF6B9D"
+                    android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <path
+        android:fillColor="#26FFFFFF"
+        android:pathData="M0,0 H320 V40 Q160,70 0,40 Z" />
+
+    <path
+        android:fillColor="#14004E7A"
+        android:pathData="M0,180 H320 V140 Q160,170 0,140 Z" />
+
+    <path
+        android:fillColor="#E6FFFFFF"
+        android:pathData="M160,90
+                          m-44,0
+                          a44,44 0 1,0 88,0
+                          a44,44 0 1,0 -88,0 Z" />
+
+    <path
+        android:fillColor="#FFE91E63"
+        android:pathData="M148,68 L148,112 L188,90 Z" />
+
+</vector>

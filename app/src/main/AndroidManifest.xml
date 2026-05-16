@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
+    <application
+        android:name=".TvBiliApplication"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:banner="@drawable/tv_banner"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.TvBili"
+        android:usesCleartextTraffic="true"
+        tools:targetApi="31">
+
+        <!--
+          Media3 间接依赖 androidx.window 会自动 merge 进来两条 uses-library
+          (androidx.window.extensions / androidx.window.sidecar)；
+          MuMu / 雷电等改造 ROM 模拟器对未声明的 system library 会在安装阶段
+          静默拒绝（不报错），强制移除即可。required="false" 仅在标准 ROM 上
+          有效，不能依赖。
+        -->
+        <uses-library
+            android:name="androidx.window.extensions"
+            android:required="false"
+            tools:node="remove" />
+        <uses-library
+            android:name="androidx.window.sidecar"
+            android:required="false"
+            tools:node="remove" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode" />
+
+        <activity-alias
+            android:name=".MainActivityAliasTvLauncher"
+            android:enabled="true"
+            android:exported="true"
+            android:banner="@drawable/tv_banner"
+            android:icon="@mipmap/ic_launcher"
+            android:roundIcon="@mipmap/ic_launcher_round"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.TvBili"
+            android:targetActivity=".MainActivity">
+            <intent-filter android:priority="1">
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+    </application>
+</manifest>
