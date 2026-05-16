@@ -5,32 +5,43 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.intl.Locale
+import androidx.compose.ui.text.intl.LocaleList
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import dev.tvbili.tv.tvFocusable
 import dev.tvbili.ui.home.components.VideoCard
 
 /**
@@ -51,6 +62,7 @@ fun SearchScreen(
     val query by vm.query.collectAsStateWithLifecycle()
     val state by vm.state.collectAsStateWithLifecycle()
     val inputFocus = remember { FocusRequester() }
+    var imeIsChinese by rememberSaveable { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
         runCatching { inputFocus.requestFocus() }
@@ -64,24 +76,59 @@ fun SearchScreen(
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = vm::onQueryChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .focusRequester(inputFocus),
-            singleLine = true,
-            placeholder = { Text("搜视频…", color = Color(0xFF707070)) },
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = { vm.submit() }),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White,
-                focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = Color(0xFF404040),
-                cursorColor = MaterialTheme.colorScheme.primary,
-            ),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            key(imeIsChinese) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = vm::onQueryChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(inputFocus),
+                    singleLine = true,
+                    placeholder = {
+                        Text(
+                            text = if (imeIsChinese) "搜视频…" else "Search videos…",
+                            color = Color(0xFF707070),
+                        )
+                    },
+                    keyboardOptions = KeyboardOptions(
+                        imeAction = ImeAction.Search,
+                        hintLocales = if (imeIsChinese) {
+                            LocaleList(Locale("zh-CN"))
+                        } else {
+                            LocaleList(Locale("en-US"))
+                        },
+                    ),
+                    keyboardActions = KeyboardActions(onSearch = { vm.submit() }),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = Color(0xFF404040),
+                        cursorColor = MaterialTheme.colorScheme.primary,
+                    ),
+                )
+            }
+            OutlinedButton(
+                onClick = {
+                    imeIsChinese = !imeIsChinese
+                    runCatching { inputFocus.requestFocus() }
+                },
+                modifier = Modifier
+                    .width(80.dp)
+                    .tvFocusable(cornerRadius = 8.dp, scaleOnFocus = 1.08f),
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text(
+                    text = if (imeIsChinese) "中" else "En",
+                    color = Color.White,
+                )
+            }
+        }
 
         Box(modifier = Modifier.fillMaxSize()) {
             when (val s = state) {

@@ -19,7 +19,12 @@ enum class SectionId(
     LIVE("直播", -1, Kind.LIVE),
     RANKING("排行", 0, Kind.RANKING),
     BANGUMI("番剧", 13, Kind.RANKING),
-    CINEMA("电影", 23, Kind.RANKING),
+    /**
+     * 电影：走 PGC（season_type=2），返回真正的电影 season 列表。
+     * 之前用 ranking/v2 rid=23（UGC 电影分区）——服务端 top-100 长期不变，体感像「列表固定」；
+     * 切到 PGC rank 后会跟随每周热门轮换，且能借 try_look=1 给非大会员试看。
+     */
+    CINEMA("电影", 2, Kind.PGC),
     /**
      * 综艺：走 PGC index 接口（season_type=7），返回真正的综艺节目（向往的生活/奔跑吧 等），
      * 而不是 ranking/v2 rid=5 那种「娱乐分区 UGC 短视频」。
