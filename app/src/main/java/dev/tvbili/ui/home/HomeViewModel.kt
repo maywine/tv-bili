@@ -61,6 +61,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private var rcmdFreshIdx = 1
 
+    /**
+     * PGC 分区已加载到第几页。`load()` 重置为 1；`loadMore()` 成功一次 +1。
+     * 各 PGC 分区独立计数——CINEMA 翻到第 3 页时切到 VARIETY 不影响后者从 1 开始。
+     */
+    private val pgcPageMap = ConcurrentHashMap<SectionId, Int>()
+
     init {
         load(_selectedSection.value)
 
@@ -110,15 +116,27 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun retry(section: SectionId) = load(section)
 
     /**
-     * 推荐流分页追加：滚到 grid 末尾时由 ContentPane 触发。
-     * 非 RECOMMEND 分区 no-op（B 站 ranking/popular 不暴露稳定的分页接口，硬分页易拿重复）。
+     * 分页追加：滚到 grid 末尾时由 ContentPane 触发。
+     * 支持的分区：
+     * - RECOMMEND：用 rcmdFreshIdx 顺序拉推荐流
+     * - PGC：用 pgcPageMap 拉 pgc/season/index/result 下一页
+     * 其它分区 no-op（B 站 ranking/popular 不暴露稳定的分页接口，硬分页易拿重复）。
      *
+     * 共通行为：
      * - 仅在 Loaded 且非 appending 时启动；并发 selectSection 切走时按 cur 视图引用守恒，
      *   旧追加结果不会污染新分区。
      * - 失败：保持原 cards 不变，把 appending 翻回 false（不弹 UI 错误，下一次滚动重试）。
+     * - 按 stableKey 去重，防服务端重叠返回。
      */
     fun loadMore(section: SectionId) {
-        if (section.kind != SectionId.Kind.RECOMMEND) return
+        when (section.kind) {
+            SectionId.Kind.RECOMMEND -> loadMoreRecommend(section)
+            SectionId.Kind.PGC -> loadMorePgc(section)
+            else -> Unit
+        }
+    }
+
+    private fun loadMoreRecommend(section: SectionId) {
         val flow = stateFor(section)
         val cur = flow.value as? SectionState.Loaded ?: return
         if (cur.appending) return
@@ -126,23 +144,51 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val freshIdx = rcmdFreshIdx++
             val result = repo.loadRecommend(freshIdx)
-            val current = flow.value as? SectionState.Loaded ?: return@launch
-            flow.value = result.fold(
-                onSuccess = { more ->
-                    // 按 stableKey 去重，避免 B 站偶发重复推荐
-                    val existingKeys = current.cards.mapTo(mutableSetOf()) { it.stableKey }
-                    val appended = more.filter { it.stableKey !in existingKeys }
-                    current.copy(
-                        cards = current.cards + appended,
-                        appending = false,
-                    )
-                },
-                onFailure = { e ->
-                    Log.w(TAG, "loadMore($section) failed: ${e.message}")
-                    current.copy(appending = false)
-                },
-            )
+            appendResult(flow, result, tag = "loadMoreRecommend")
         }
+    }
+
+    private fun loadMorePgc(section: SectionId) {
+        val flow = stateFor(section)
+        val cur = flow.value as? SectionState.Loaded ?: return
+        if (cur.appending) return
+        // 空列表说明 index/result 不可用、当前在 rank 兜底页——rank 不分页，跳过
+        if (cur.cards.isEmpty()) return
+        flow.value = cur.copy(appending = true)
+        viewModelScope.launch {
+            val nextPage = (pgcPageMap[section] ?: 1) + 1
+            val result = pgcRepo.loadSeasonIndex(seasonType = section.rid, page = nextPage)
+            val appended = appendResult(flow, result, tag = "loadMorePgc[page=$nextPage]")
+            if (appended) pgcPageMap[section] = nextPage
+        }
+    }
+
+    /**
+     * 把分页 result 合并进 flow.value（必须是 Loaded）。返回是否真正追加了 ≥ 1 条新内容
+     * ——调用方据此决定是否把 page 计数 +1（避免空响应也推进游标，下次还是空）。
+     */
+    private fun <T : HomeCard> appendResult(
+        flow: MutableStateFlow<SectionState>,
+        result: Result<List<T>>,
+        tag: String,
+    ): Boolean {
+        val current = flow.value as? SectionState.Loaded ?: return false
+        return result.fold(
+            onSuccess = { more ->
+                val existingKeys = current.cards.mapTo(mutableSetOf()) { it.stableKey }
+                val appended = more.filter { it.stableKey !in existingKeys }
+                flow.value = current.copy(
+                    cards = current.cards + appended,
+                    appending = false,
+                )
+                appended.isNotEmpty()
+            },
+            onFailure = { e ->
+                Log.w(TAG, "$tag failed: ${e.message}")
+                flow.value = current.copy(appending = false)
+                false
+            },
+        )
     }
 
     fun markCardClicked(card: HomeCard) {
@@ -211,6 +257,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         flow.value = SectionState.Loading
+        if (section.kind == SectionId.Kind.PGC) pgcPageMap[section] = 1
         viewModelScope.launch {
             val result = when (section.kind) {
                 SectionId.Kind.RECOMMEND ->
@@ -220,7 +267,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 SectionId.Kind.RANKING -> repo.loadRanking(rid = section.rid)
                 SectionId.Kind.PGC ->
                     // PGC 分区把 rid 字段重用为 season_type
-                    pgcRepo.loadSeasonIndex(seasonType = section.rid)
+                    pgcRepo.loadSeasonIndex(seasonType = section.rid, page = 1)
                 SectionId.Kind.HISTORY -> runCatching { historyRepo.getRecent() }
                 SectionId.Kind.PLACEHOLDER -> return@launch // 上面已 return
             }

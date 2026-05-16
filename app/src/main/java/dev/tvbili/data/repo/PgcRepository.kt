@@ -17,33 +17,33 @@ import dev.tvbili.net.NetworkModule
 class PgcRepository {
 
     /**
-     * 拉 PGC 季度列表。三级 fallback——任一拿到 ≥ 1 条即返回：
+     * 拉 PGC 季度列表。
      *
-     * 1. `pgc/web/rank/list?season_type=7&day=3`——新版 web 排行接口，结构简单
-     * 2. `pgc/season/rank/list?season_type=7&day=3`——老版排行接口，对匿名请求更宽容
-     * 3. `pgc/season/index/result?...`——索引接口，参数集对齐 B 站 web 实际请求
+     * - **首选** `pgc/season/index/result`——支持分页 + 按热度排序（order=2），与 B 站 web
+     *   端电影/综艺频道页同款。每页 20 条，page 递增可继续往下拉。
+     * - **仅 page=1 兜底** rank 系列两个端点——服务端偶发空响应 / 索引端点维护时用
+     *   3 日热门榜补一条命。第 2 页起 rank 不分页，直接放弃兜底。
      *
      * 每步失败/为空都打 Log.w("PgcRepository", ...)，方便用 `adb logcat -s PgcRepository`
      * 抓到具体哪步返回了什么（code / message / size）。
      */
     suspend fun loadSeasonIndex(seasonType: Int, page: Int = 1): Result<List<HomeCard.PgcSeason>> = runCatching {
+        val tryIndex = tryFetch("index/result[page=$page]") {
+            val r = NetworkModule.pgcApi.getSeasonIndex(seasonType = seasonType, page = page)
+            r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
+        }
+        if (tryIndex.isNotEmpty() || page > 1) return@runCatching tryIndex
+
         val tryRank = tryFetch("rank/web") {
             val r = NetworkModule.pgcApi.getRank(seasonType = seasonType, day = 3)
             r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
         }
         if (tryRank.isNotEmpty()) return@runCatching tryRank
 
-        val tryLegacy = tryFetch("rank/legacy") {
+        tryFetch("rank/legacy") {
             val r = NetworkModule.pgcApi.getLegacyRank(seasonType = seasonType, day = 3)
             r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
         }
-        if (tryLegacy.isNotEmpty()) return@runCatching tryLegacy
-
-        val tryIndex = tryFetch("index/result") {
-            val r = NetworkModule.pgcApi.getSeasonIndex(seasonType = seasonType, page = page)
-            r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
-        }
-        tryIndex // 即便为空也作 success 返回——UI 显示「空空如也」而不是 Error
     }
 
     /** 调一个 PGC 端点，记录 code/数量；任何异常都吞掉返回空列表（由调用方继续尝试下一步）。 */
