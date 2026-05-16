@@ -59,9 +59,15 @@ class SectionConfigStoreTest {
 
     @Test
     fun `DEFAULT_SECTIONS matches current PRD spec`() {
-        // Phase 5 起：默认在「热门」后插入「电影」
+        // 当前默认：RCMD → HOT → CINEMA → VARIETY → LIVE
         assertEquals(
-            listOf(SectionId.RCMD, SectionId.HOT, SectionId.CINEMA, SectionId.LIVE),
+            listOf(
+                SectionId.RCMD,
+                SectionId.HOT,
+                SectionId.CINEMA,
+                SectionId.VARIETY,
+                SectionId.LIVE,
+            ),
             SectionConfigStore.DEFAULT_SECTIONS,
         )
     }

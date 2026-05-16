@@ -20,6 +20,7 @@ enum class SectionId(
     RANKING("排行", 0, Kind.RANKING),
     BANGUMI("番剧", 13, Kind.RANKING),
     CINEMA("电影", 23, Kind.RANKING),
+    VARIETY("综艺", 5, Kind.RANKING),
     ANIME_AREA("动画", 1, Kind.RANKING),
     GAME_AREA("游戏", 4, Kind.RANKING),
     MUSIC_AREA("音乐", 3, Kind.RANKING),
@@ -37,10 +38,13 @@ sealed interface SectionState {
     /**
      * @property loadedAtMs 本次拉取完成的墙钟时间戳，用于过期判定（隔夜/隔小时回到 app
      * 时强制重拉，避免一直看缓存）。
+     * @property appending true 表示底部分页加载中（仅 [SectionId.Kind.RECOMMEND] 用），
+     * 用于在 grid 末尾画 spinner、防止重复触发分页。
      */
     data class Loaded(
         val cards: List<HomeCard>,
         val loadedAtMs: Long = System.currentTimeMillis(),
+        val appending: Boolean = false,
     ) : SectionState
     data class Error(val message: String) : SectionState
     /** 分区无数据时的占位（如 FAVORITE 尚未实装）。 */

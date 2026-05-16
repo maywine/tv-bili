@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.tvbili.data.repo.HistoryRepository
+import dev.tvbili.data.repo.HomeCard
 import dev.tvbili.data.repo.HomeRepository
 import dev.tvbili.data.store.SectionConfigStore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingGridFocus = MutableStateFlow(false)
     val pendingGridFocus: StateFlow<Boolean> = _pendingGridFocus.asStateFlow()
 
+    /**
+     * 用户在每个分区里最后点击的卡片 [HomeCard.stableKey]。返回首页后 [ContentPane]
+     * 据此 scrollToItem + 把焦点钉到该卡，规避 HomeScreen 在 nav 切换中被销毁导致
+     * `focusRestorer()` 的内部记忆失效（destroy → recompose 后 grid 焦点回首项）。
+     */
+    private val lastFocusedKey = ConcurrentHashMap<SectionId, String>()
+
     /** 按需懒建：进入分区才创建对应 StateFlow，避免 12 个分区全部初始 = Idle 浪费内存。 */
     private val states = ConcurrentHashMap<SectionId, MutableStateFlow<SectionState>>()
 
@@ -69,17 +77,76 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun selectSection(section: SectionId) {
         _selectedSection.value = section
         val current = stateFor(section).value
+        val ttl = staleTtlMs(section)
         val stale = current is SectionState.Loaded &&
-            System.currentTimeMillis() - current.loadedAtMs > STALE_AFTER_MS
+            System.currentTimeMillis() - current.loadedAtMs > ttl
         if (current is SectionState.Idle || current is SectionState.Error || stale) {
             load(section)
         }
     }
 
+    /**
+     * 不同分区数据「新鲜」的口径不同：
+     * - 推荐：30 s —— 内容变化最快，用户期望每次回来都能见到新内容
+     * - 排行 / 番剧 / 电影 / 综艺 等 RANKING：5 min —— 排行榜分钟级波动
+     * - 热门 / 直播：2 min
+     * - HISTORY：永远 stale，重进必刷
+     */
+    private fun staleTtlMs(section: SectionId): Long = when (section.kind) {
+        SectionId.Kind.RECOMMEND -> 30L * 1000
+        SectionId.Kind.POPULAR -> 2L * 60 * 1000
+        SectionId.Kind.LIVE -> 2L * 60 * 1000
+        SectionId.Kind.RANKING -> 5L * 60 * 1000
+        SectionId.Kind.HISTORY -> 0L
+        SectionId.Kind.PLACEHOLDER -> Long.MAX_VALUE
+    }
+
     fun retry(section: SectionId) = load(section)
 
-    fun markCardClicked() { _pendingGridFocus.value = true }
+    /**
+     * 推荐流分页追加：滚到 grid 末尾时由 ContentPane 触发。
+     * 非 RECOMMEND 分区 no-op（B 站 ranking/popular 不暴露稳定的分页接口，硬分页易拿重复）。
+     *
+     * - 仅在 Loaded 且非 appending 时启动；并发 selectSection 切走时按 cur 视图引用守恒，
+     *   旧追加结果不会污染新分区。
+     * - 失败：保持原 cards 不变，把 appending 翻回 false（不弹 UI 错误，下一次滚动重试）。
+     */
+    fun loadMore(section: SectionId) {
+        if (section.kind != SectionId.Kind.RECOMMEND) return
+        val flow = stateFor(section)
+        val cur = flow.value as? SectionState.Loaded ?: return
+        if (cur.appending) return
+        flow.value = cur.copy(appending = true)
+        viewModelScope.launch {
+            val freshIdx = rcmdFreshIdx++
+            val result = repo.loadRecommend(freshIdx)
+            val current = flow.value as? SectionState.Loaded ?: return@launch
+            flow.value = result.fold(
+                onSuccess = { more ->
+                    // 按 stableKey 去重，避免 B 站偶发重复推荐
+                    val existingKeys = current.cards.mapTo(mutableSetOf()) { it.stableKey }
+                    val appended = more.filter { it.stableKey !in existingKeys }
+                    current.copy(
+                        cards = current.cards + appended,
+                        appending = false,
+                    )
+                },
+                onFailure = { e ->
+                    Log.w(TAG, "loadMore($section) failed: ${e.message}")
+                    current.copy(appending = false)
+                },
+            )
+        }
+    }
+
+    fun markCardClicked(card: HomeCard) {
+        lastFocusedKey[_selectedSection.value] = card.stableKey
+        _pendingGridFocus.value = true
+    }
     fun consumePendingGridFocus() { _pendingGridFocus.value = false }
+
+    /** ContentPane 重新挂载时读：要把焦点钉回哪张卡。null = 走 grid 默认首项。 */
+    fun focusKeyFor(section: SectionId): String? = lastFocusedKey[section]
 
     private fun stateFor(section: SectionId): MutableStateFlow<SectionState> =
         states.getOrPut(section) { MutableStateFlow(SectionState.Idle) }
@@ -91,7 +158,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         if (section.kind == SectionId.Kind.PLACEHOLDER) {
             flow.value = SectionState.Empty(
                 hint = when (section) {
-                    SectionId.FAVORITE -> "收藏夹支持暂未规划"
+                    SectionId.FAVORITE -> "请到「个人中心 → 我的收藏」查看"
                     else -> "即将上线"
                 },
             )
@@ -121,11 +188,5 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private companion object {
         const val TAG = "HomeViewModel"
-
-        /**
-         * 列表数据视为「新鲜」的时长——超过则下次 selectSection 自动重拉。
-         * 5 分钟既能避免来回点同一 tab 反复发请求，又能在隔夜回到 app 时刷出当天的热门。
-         */
-        const val STALE_AFTER_MS = 5L * 60 * 1000
     }
 }

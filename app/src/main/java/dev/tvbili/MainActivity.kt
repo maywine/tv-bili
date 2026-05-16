@@ -18,6 +18,8 @@ import androidx.media3.common.util.UnstableApi
 import dev.tvbili.data.store.TokenStore
 import dev.tvbili.tv.LocalIsTvDevice
 import dev.tvbili.tv.TvUtils
+import dev.tvbili.ui.favorite.FavoriteScreen
+import dev.tvbili.ui.history.HistoryScreen
 import dev.tvbili.ui.home.HomeScreen
 import dev.tvbili.ui.live.LiveRoomScreen
 import dev.tvbili.ui.login.LoginScreen
@@ -32,6 +34,8 @@ private sealed interface AppScreen {
     data object Settings : AppScreen
     data object Search : AppScreen
     data object Profile : AppScreen
+    data object History : AppScreen
+    data object Favorite : AppScreen
     data class Video(val bvid: String) : AppScreen
     data class Live(val roomId: Long) : AppScreen
 }
@@ -96,6 +100,24 @@ class MainActivity : ComponentActivity() {
                                         screen = AppScreen.Home
                                         loggedIn = false
                                     },
+                                    onNavigateToHistory = { screen = AppScreen.History },
+                                    onNavigateToFavorite = { screen = AppScreen.Favorite },
+                                )
+                            }
+                            screen is AppScreen.History -> {
+                                BackHandler { screen = AppScreen.Profile }
+                                HistoryScreen(
+                                    modifier = Modifier.padding(padding),
+                                    onBack = { screen = AppScreen.Profile },
+                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid) },
+                                )
+                            }
+                            screen is AppScreen.Favorite -> {
+                                BackHandler { screen = AppScreen.Profile }
+                                FavoriteScreen(
+                                    modifier = Modifier.padding(padding),
+                                    onBack = { screen = AppScreen.Profile },
+                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid) },
                                 )
                             }
                             else -> HomeScreen(

@@ -10,12 +10,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,10 +38,18 @@ fun SectionsSettingsScreen(
 ) {
     val selected by vm.selected.collectAsStateWithLifecycle()
 
+    // VM 被 Activity ViewModelStore 复用——重进设置页时把草稿还原到 DataStore 真值，
+    // 避免 stale 草稿（例如上次保存失败 / 用户中途返回未保存）覆盖外部状态。
+    LaunchedEffect(Unit) { vm.resetFromStore() }
+
+    // 总条目 ≤ SectionId.entries.size（13），不需要 lazy；两段都放进同一个可滚动 Column——
+    // 之前用两个无 weight 的 LazyColumn 嵌在 Column 里，第一个会吃掉全部剩余高度，
+    // 第二个（候选）+ 保存按钮拿到 0 dp 而不显示。
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 48.dp, vertical = 32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
@@ -53,15 +62,15 @@ fun SectionsSettingsScreen(
 
         // 已选区
         Text("已选（${selected.size}）", color = Color(0xFFB0B0B0), fontSize = 14.sp)
-        LazyColumn(
+        Column(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            items(items = selected, key = { "sel_${it.name}" }) { sec ->
+            selected.forEachIndexed { index, sec ->
                 SelectedRow(
                     section = sec,
-                    canMoveUp = selected.indexOf(sec) > 0,
-                    canMoveDown = selected.indexOf(sec) < selected.lastIndex,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < selected.lastIndex,
                     onUp = { vm.moveUp(sec) },
                     onDown = { vm.moveDown(sec) },
                     onRemove = { vm.toggle(sec) },
@@ -70,12 +79,17 @@ fun SectionsSettingsScreen(
         }
 
         Text("候选", color = Color(0xFFB0B0B0), fontSize = 14.sp)
-        LazyColumn(
+        Column(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth(),
         ) {
-            items(items = vm.available, key = { "avail_${it.name}" }) { sec ->
-                AvailableRow(section = sec, onAdd = { vm.toggle(sec) })
+            val available = vm.available
+            if (available.isEmpty()) {
+                Text("全部分区已加入已选", color = Color(0xFF707070), fontSize = 12.sp)
+            } else {
+                available.forEach { sec ->
+                    AvailableRow(section = sec, onAdd = { vm.toggle(sec) })
+                }
             }
         }
 

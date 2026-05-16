@@ -2,6 +2,7 @@ package dev.tvbili.net
 
 import android.content.Context
 import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import dev.tvbili.data.api.FavoriteApi
 import dev.tvbili.data.api.LiveApi
 import dev.tvbili.data.api.MainApi
 import dev.tvbili.data.api.PassportApi
@@ -93,6 +94,15 @@ object NetworkModule {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(SearchApi::class.java)
+    }
+
+    val favoriteApi: FavoriteApi by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://api.bilibili.com/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+            .create(FavoriteApi::class.java)
     }
 
     fun init(context: Context) {

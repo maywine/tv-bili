@@ -38,7 +38,7 @@ fun HomeScreen(
             section = selected,
             state = state,
             onCardClick = { card ->
-                vm.markCardClicked()
+                vm.markCardClicked(card)
                 when (card) {
                     is HomeCard.Video -> onNavigateToVideo(card.bvid)
                     is HomeCard.Live -> onNavigateToLive(card.roomId)
@@ -47,6 +47,8 @@ fun HomeScreen(
             onRetry = { vm.retry(selected) },
             pendingGridFocus = pendingGridFocus,
             onConsumeGridFocus = vm::consumePendingGridFocus,
+            lastFocusedKey = vm.focusKeyFor(selected),
+            onLoadMore = { vm.loadMore(selected) },
         )
     }
 }

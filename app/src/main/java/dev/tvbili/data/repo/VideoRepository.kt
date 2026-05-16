@@ -1,6 +1,7 @@
 package dev.tvbili.data.repo
 
 import dev.tvbili.data.model.PlayUrlData
+import dev.tvbili.data.model.RelatedVideoItem
 import dev.tvbili.data.model.VideoDetail
 import dev.tvbili.net.NetworkModule
 import dev.tvbili.net.WbiKeyManager
@@ -61,6 +62,16 @@ class VideoRepository {
         val raw = body.use { it.bytes() }
         require(raw.isNotEmpty()) { "danmaku empty cid=$cid" }
         if (raw[0] == 0x3C.toByte()) raw else inflateRawDeflate(raw)
+    }
+
+    /**
+     * 拉取相关视频列表。失败 / 空返 failure；调用方据此跳过自动续播。
+     * 过滤掉 bvid 为空 / 时长 0 的脏数据。
+     */
+    suspend fun loadRelated(bvid: String): Result<List<RelatedVideoItem>> = runCatching {
+        val resp = NetworkModule.videoApi.getRelated(bvid)
+        require(resp.code == 0) { "related code=${resp.code} msg=${resp.message}" }
+        resp.data.filter { it.bvid.isNotBlank() && it.duration > 0 }
     }
 
     private fun inflateRawDeflate(bytes: ByteArray): ByteArray {

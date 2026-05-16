@@ -22,15 +22,19 @@ import kotlinx.coroutines.flow.map
 object SectionConfigStore {
 
     val DEFAULT_SECTIONS: List<SectionId> =
-        listOf(SectionId.RCMD, SectionId.HOT, SectionId.CINEMA, SectionId.LIVE)
+        listOf(SectionId.RCMD, SectionId.HOT, SectionId.CINEMA, SectionId.VARIETY, SectionId.LIVE)
 
     /**
-     * Phase 4 之前的默认分区。检测到用户存的就是这套时，自动升级到 [DEFAULT_SECTIONS]
-     * （在「热门」后插入「电影」），让没动过设置的老用户也能拿到新默认。
-     * 用户一旦自定义过列表（哪怕只删一项），这个迁移就跳过——不会覆盖用户改动。
+     * 历史默认分区集合。任意一条匹配上，且用户未自定义过，就自动升级到 [DEFAULT_SECTIONS]。
+     * 用户一旦改过列表（哪怕只删一项），就当成已自定义，不迁移、不覆盖用户改动。
+     *
+     * - Phase 0：RCMD + HOT + LIVE
+     * - Phase 4：在 HOT 后插入 CINEMA
      */
-    private val LEGACY_DEFAULT_SECTIONS: List<SectionId> =
-        listOf(SectionId.RCMD, SectionId.HOT, SectionId.LIVE)
+    private val LEGACY_DEFAULT_SECTIONS_LIST: List<List<SectionId>> = listOf(
+        listOf(SectionId.RCMD, SectionId.HOT, SectionId.LIVE),
+        listOf(SectionId.RCMD, SectionId.HOT, SectionId.CINEMA, SectionId.LIVE),
+    )
 
     @Volatile
     var current: List<SectionId> = DEFAULT_SECTIONS
@@ -40,8 +44,8 @@ object SectionConfigStore {
     suspend fun bootstrap(context: Context) {
         val raw = context.tvBiliPrefs.data.first()[KEY]
         val parsed = parseSections(raw)
-        val migrated = if (parsed == LEGACY_DEFAULT_SECTIONS) {
-            Log.d(TAG, "migrate legacy default → new default (insert CINEMA after HOT)")
+        val migrated = if (parsed != null && parsed in LEGACY_DEFAULT_SECTIONS_LIST) {
+            Log.d(TAG, "migrate legacy default → new default ${DEFAULT_SECTIONS.map(SectionId::name)}")
             DEFAULT_SECTIONS.also { saveBlocking(context, it) }
         } else parsed
         current = migrated ?: DEFAULT_SECTIONS

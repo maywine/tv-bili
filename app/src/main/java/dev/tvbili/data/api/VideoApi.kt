@@ -1,6 +1,7 @@
 package dev.tvbili.data.api
 
 import dev.tvbili.data.model.PlayUrlResponse
+import dev.tvbili.data.model.RelatedResponse
 import dev.tvbili.data.model.VideoDetailResponse
 import okhttp3.ResponseBody
 import retrofit2.http.GET
@@ -31,4 +32,8 @@ interface VideoApi {
     @Streaming
     @GET("https://comment.bilibili.com/{cid}.xml")
     suspend fun getDanmakuXml(@Path("cid") cid: Long): ResponseBody
+
+    /** 相关视频推荐——bvid 指定来源视频，返回按 B 站算法排序的相关列表。 */
+    @GET("x/web-interface/archive/related")
+    suspend fun getRelated(@Query("bvid") bvid: String): RelatedResponse
 }

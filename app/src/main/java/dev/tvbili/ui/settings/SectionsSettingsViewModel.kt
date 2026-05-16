@@ -17,11 +17,19 @@ import kotlinx.coroutines.launch
  *
  * 保留顺序：[selected] 是 List<SectionId>；[available] 是「未选中候选」的
  * 派生列表（按 enum 声明顺序），不存 State。
+ *
+ * VM 被 Activity ViewModelStore 复用——用户多次进出设置页时 [resetFromStore] 由
+ * `LaunchedEffect(Unit)` 在每次进入页面时显式调一次，避免缓存上次草稿。
  */
 class SectionsSettingsViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _selected = MutableStateFlow(SectionConfigStore.current)
     val selected: StateFlow<List<SectionId>> = _selected.asStateFlow()
+
+    /** 每次进入设置页时调一次：把草稿重置回 DataStore 真值。 */
+    fun resetFromStore() {
+        _selected.value = SectionConfigStore.current
+    }
 
     val available: List<SectionId>
         get() = SectionId.entries.filterNot { it in _selected.value }

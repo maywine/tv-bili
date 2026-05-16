@@ -4,9 +4,12 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import dev.tvbili.data.model.PlayUrlData
+import dev.tvbili.data.model.RelatedVideoItem
 import dev.tvbili.data.model.VideoDetail
 import dev.tvbili.data.repo.HistoryRepository
 import dev.tvbili.data.repo.HomeCard
@@ -17,6 +20,8 @@ import dev.tvbili.player.StreamSelector
 import dev.tvbili.player.resolvePlayerBufferPolicy
 import dev.tvbili.tv.TvUtils
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -75,10 +80,209 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                 isTv = isTv,
                 totalMemMb = TvUtils.totalMemMb(application),
             ),
-        )
+        ).also { it.addListener(playerListener) }
     }
 
     private var currentBvid: String = ""
+    /** 多 P 视频里当前播放的分 P 索引（0-based）。 */
+    private var currentPageIndex: Int = 0
+    private var watchdogJob: Job? = null
+    /** 自动恢复尝试次数（一次 load 周期内）；超过则停手避免死循环 */
+    private var autoRecoverAttempts: Int = 0
+
+    /** 当前视频的相关推荐列表；播完末 P 时取首个自动续播。在视频 Ready 后异步填充。 */
+    private var relatedQueue: List<RelatedVideoItem> = emptyList()
+    /** 当 ENDED 触发时若 [relatedQueue] 还没拉回来，先把意图记在这里——拉回后立刻续播。 */
+    private var pendingAutoAdvanceOnRelatedReady: Boolean = false
+
+    private val playerListener = object : Player.Listener {
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState != Player.STATE_ENDED) return
+            val ready = _state.value as? VideoDetailState.Ready ?: return
+            val pages = ready.detail.pages
+            // 多 P 未到末 P → 先放下一 P
+            if (pages.size > 1 && currentPageIndex + 1 < pages.size) {
+                advanceToPage(currentPageIndex + 1)
+                return
+            }
+            // 单 P / 已到末 P → 拉相关视频续播；相关列表还没就位时先记账，loadRelated 完会兜底
+            val first = relatedQueue.firstOrNull()
+            if (first != null) {
+                advanceToRelated(first)
+            } else {
+                pendingAutoAdvanceOnRelatedReady = true
+            }
+        }
+
+        /**
+         * 长时间播放黑屏的常见根因：
+         * 1. DASH segment URL 过期（B 站 CDN URL 含 expires 时间戳，2 h 左右失效）
+         * 2. 网络抖动后 ExoPlayer source 反复重试失败最终抛 PlaybackException
+         *
+         * 处理：仅一次自动重拉 playurl + 续播到当前位置。仍失败则把 UI 翻 Error，
+         * 用户可重试。播放器内部错误（解码 / 渲染）不重拉——重拉拿不到不同 codec 帮不了。
+         */
+        override fun onPlayerError(error: PlaybackException) {
+            Log.w(TAG, "player error ${error.errorCode}: ${error.message}")
+            val ready = _state.value as? VideoDetailState.Ready ?: run {
+                _state.value = VideoDetailState.Error(error.message ?: "播放出错")
+                return
+            }
+            when (error.errorCode) {
+                PlaybackException.ERROR_CODE_IO_INVALID_HTTP_CONTENT_TYPE,
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
+                PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> refreshPlayUrlAfterError(ready)
+                else -> _state.value = VideoDetailState.Error(error.message ?: "播放出错")
+            }
+        }
+    }
+
+    /** 自动重拉 playurl 续播——同 cid + 同 qn，新 URL 替换过期/出错 URL。次数封顶 [MAX_AUTO_RECOVER]。 */
+    private fun refreshPlayUrlAfterError(ready: VideoDetailState.Ready) {
+        if (autoRecoverAttempts >= MAX_AUTO_RECOVER) {
+            _state.value = VideoDetailState.Error("播放反复失败，请点击重试")
+            return
+        }
+        autoRecoverAttempts++
+        val savedPos = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
+        viewModelScope.launch {
+            repo.loadPlayUrl(currentBvid, ready.detail.cid, _selectedQn.value).fold(
+                onSuccess = { newPlayUrl ->
+                    setPlayerMedia(newPlayUrl, resumeMs = savedPos)
+                    _state.value = ready.copy(playUrl = newPlayUrl)
+                    Log.d(TAG, "auto-recovered from playback error @ ${savedPos}ms (attempt $autoRecoverAttempts)")
+                },
+                onFailure = { e ->
+                    Log.e(TAG, "auto-recover failed", e)
+                    _state.value = VideoDetailState.Error(e.message ?: "播放出错")
+                },
+            )
+        }
+    }
+
+    /**
+     * 看门狗：每 [WATCHDOG_POLL_MS] 轮询一次，若 playWhenReady=true 且 currentPosition
+     * 连续两次相等（=「上次和这次都没动」），视为「卡死黑屏」走 [refreshPlayUrlAfterError]。
+     * 触发窗口 = 1 个 poll 周期；想更激进改 [WATCHDOG_POLL_MS] 即可。
+     *
+     * 抓的是 ExoPlayer 内部仍报 READY/BUFFERING 但不抛 PlaybackException 的「无声卡死」——
+     * [Player.Listener.onPlayerError] 抓不到的那一类。
+     *
+     * 早退条件（不算卡死）：
+     * - state ≠ Ready：起播未完成 / 出错 / 加载中，本来就该不动
+     * - playWhenReady=false：用户主动暂停
+     * - playbackState=ENDED：正常播完（由 ENDED listener 续播）
+     * - 接近末尾（pos ≥ duration - 1s）：最后一秒数值抖动，避免误判
+     */
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        watchdogJob = viewModelScope.launch {
+            var lastPos = -1L
+            while (true) {
+                delay(WATCHDOG_POLL_MS)
+                val s = _state.value
+                if (s !is VideoDetailState.Ready) {
+                    lastPos = -1L; continue
+                }
+                val playing = runCatching { player.playWhenReady }.getOrDefault(false)
+                val state = runCatching { player.playbackState }.getOrDefault(Player.STATE_IDLE)
+                val pos = runCatching { player.currentPosition }.getOrDefault(0L)
+                val dur = runCatching { player.duration }.getOrDefault(0L)
+                if (!playing || state == Player.STATE_ENDED) {
+                    lastPos = pos; continue
+                }
+                if (dur > 0L && pos >= dur - 1_000L) {
+                    lastPos = pos; continue
+                }
+                // 连续两次同 pos = 至少 1 个 poll 周期没推进 → 自动恢复
+                // lastPos == -1L 表示第一次采样，没基线可比，先记下来下轮再说
+                if (lastPos != -1L && pos == lastPos) {
+                    Log.w(TAG, "watchdog: stuck @${pos}ms for ≥${WATCHDOG_POLL_MS}ms → auto-recover")
+                    refreshPlayUrlAfterError(s)
+                    lastPos = -1L // 重启采样基线，避免恢复期间又被同 pos 二次触发
+                } else {
+                    lastPos = pos
+                }
+            }
+        }
+    }
+
+    /**
+     * 拉相关视频列表填到 [relatedQueue]。
+     * 若 ENDED 在结果回来前先到（[pendingAutoAdvanceOnRelatedReady] = true），
+     * 这里成功时立刻续播首项；失败则放弃自动续播（不弹错误）。
+     */
+    private suspend fun prefetchRelated(bvid: String) {
+        repo.loadRelated(bvid).fold(
+            onSuccess = { list ->
+                // bvid 可能在中途切走（用户主动开了别的视频）；只有还在播原 bvid 时才认这结果
+                if (currentBvid != bvid) return
+                relatedQueue = list
+                if (pendingAutoAdvanceOnRelatedReady) {
+                    pendingAutoAdvanceOnRelatedReady = false
+                    val first = list.firstOrNull() ?: return
+                    advanceToRelated(first)
+                }
+            },
+            onFailure = { e ->
+                Log.w(TAG, "prefetchRelated($bvid) failed: ${e.message}")
+                pendingAutoAdvanceOnRelatedReady = false
+            },
+        )
+    }
+
+    /**
+     * 切到相关视频续播——本质等同 [load] 一个新 bvid，复用 player 实例。
+     * 走 [load] 主流程：会重置 currentPageIndex / 重启 watchdog / 重拉 detail+playurl+弹幕+related。
+     */
+    private fun advanceToRelated(target: RelatedVideoItem) {
+        Log.d(TAG, "auto-next: $currentBvid → ${target.bvid}")
+        load(target.bvid)
+    }
+
+    private fun advanceToPage(index: Int) {
+        val ready = _state.value as? VideoDetailState.Ready ?: return
+        val pages = ready.detail.pages
+        val target = pages.getOrNull(index) ?: return
+        currentPageIndex = index
+        viewModelScope.launch {
+            runCatching {
+                val playUrl = repo.loadPlayUrl(currentBvid, target.cid, _selectedQn.value).getOrThrow()
+                val newDetail = ready.detail.copy(cid = target.cid, duration = target.duration)
+                setPlayerMedia(playUrl, resumeMs = 0L)
+                _state.value = VideoDetailState.Ready(newDetail, playUrl, null)
+                // 弹幕跟随分 P 重拉
+                launch {
+                    val xml = withContext(Dispatchers.IO) {
+                        repo.loadDanmakuBytes(target.cid).getOrNull()
+                    }
+                    val cur = _state.value
+                    if (cur is VideoDetailState.Ready && cur.detail.cid == target.cid) {
+                        _state.value = cur.copy(danmakuXml = xml)
+                    }
+                }
+                // 顶到历史首位并清掉旧 cid 进度（新 P 算新一轮观看）
+                runCatching {
+                    historyRepo.recordView(
+                        card = HomeCard.Video(
+                            aid = newDetail.aid,
+                            bvid = currentBvid,
+                            title = newDetail.title,
+                            coverUrl = newDetail.pic,
+                            uploader = newDetail.owner.name,
+                            durationSec = newDetail.duration,
+                            viewCount = 0,
+                        ),
+                        cid = target.cid,
+                    )
+                }
+            }.onFailure { e ->
+                Log.e(TAG, "advanceToPage($index) failed", e)
+            }
+        }
+    }
 
     fun load(bvid: String) {
         if (bvid.isBlank()) {
@@ -87,7 +291,12 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         }
         if (currentBvid == bvid && _state.value is VideoDetailState.Ready) return
         currentBvid = bvid
+        currentPageIndex = 0
+        autoRecoverAttempts = 0
+        relatedQueue = emptyList()
+        pendingAutoAdvanceOnRelatedReady = false
         _state.value = VideoDetailState.Loading(bvid)
+        startWatchdog()
         viewModelScope.launch {
             // 阶段 1：detail + playurl → 立刻起播。不再等弹幕 XML 下完才 setPlayerMedia，
             // 否则 PlayerSurface 进合成时机被弹幕下载阻塞，ExoPlayer 已经开始解码音频但
@@ -136,6 +345,9 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                             _state.value = cur.copy(danmakuXml = xml)
                         }
                     }
+                    // 阶段 3：相关视频列表预拉，供「末 P 看完后自动续播下一个视频」。
+                    // 失败 / 空都不影响主播放——只是 ENDED 时不自动续播，等用户按返回。
+                    launch { prefetchRelated(bvid) }
                 },
                 onFailure = { e ->
                     Log.e(TAG, "load($bvid) failed", e)
@@ -146,7 +358,10 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun retry() {
-        if (currentBvid.isNotBlank()) load(currentBvid)
+        if (currentBvid.isBlank()) return
+        val keep = currentBvid
+        currentBvid = "" // 绕过 load 里 currentBvid==bvid 的早退
+        load(keep)
     }
 
     fun seekBy(deltaMs: Long) {
@@ -231,10 +446,18 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
 
     override fun onCleared() {
         super.onCleared()
+        watchdogJob?.cancel()
         runCatching { player.release() }
     }
 
     private companion object {
         const val TAG = "VideoDetailVM"
+        /** 每个视频 (bvid) 内播放出错后自动重拉 playurl 的次数上限，不跨视频累计。 */
+        const val MAX_AUTO_RECOVER = 3
+        /**
+         * 看门狗轮询间隔；也就是「卡死」检出的最小窗口（连续两次同 pos 即触发，
+         * 实际触发时机 = 1～2 个 poll 周期，即 2.5～5 s）。调短更激进、调长更宽容。
+         */
+        const val WATCHDOG_POLL_MS = 2_500L
     }
 }

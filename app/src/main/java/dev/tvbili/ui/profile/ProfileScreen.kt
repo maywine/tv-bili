@@ -54,6 +54,8 @@ import dev.tvbili.tv.tvFocusable
 fun ProfileScreen(
     onBack: () -> Unit,
     onLoggedOut: () -> Unit,
+    onNavigateToHistory: () -> Unit,
+    onNavigateToFavorite: () -> Unit,
     modifier: Modifier = Modifier,
     vm: ProfileViewModel = viewModel(),
 ) {
@@ -81,6 +83,8 @@ fun ProfileScreen(
                 data = s.data,
                 onCancel = onBack,
                 onConfirmLogout = { vm.logout(onLoggedOut) },
+                onNavigateToHistory = onNavigateToHistory,
+                onNavigateToFavorite = onNavigateToFavorite,
             )
         }
     }
@@ -91,6 +95,8 @@ private fun ProfileBody(
     data: NavData?,
     onCancel: () -> Unit,
     onConfirmLogout: () -> Unit,
+    onNavigateToHistory: () -> Unit,
+    onNavigateToFavorite: () -> Unit,
 ) {
     var confirming by remember { mutableStateOf(false) }
     val isTv = LocalIsTvDevice.current
@@ -155,6 +161,19 @@ private fun ProfileBody(
     Spacer(Modifier.height(16.dp))
 
     if (!confirming) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            ActionButton(
+                label = "历史记录",
+                tint = Color(0xFF2A2A2A),
+                onClick = onNavigateToHistory,
+            )
+            ActionButton(
+                label = "我的收藏",
+                tint = Color(0xFF2A2A2A),
+                onClick = onNavigateToFavorite,
+            )
+        }
+        Spacer(Modifier.height(8.dp))
         ActionButton(
             label = "退出登录",
             tint = MaterialTheme.colorScheme.error,

@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -17,6 +18,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +45,10 @@ fun ContentPane(
     /** 从详情页返回时为 true：grid 应当主动 requestFocus → focusRestorer 还原到上次卡片 */
     pendingGridFocus: Boolean = false,
     onConsumeGridFocus: () -> Unit = {},
+    /** 上次用户点击的卡片 stableKey；用于跨 HomeScreen 重建准确还原焦点。 */
+    lastFocusedKey: String? = null,
+    /** 滑到列表尾部时调用：仅 [SectionId.Kind.RECOMMEND] 在 ViewModel 内追加分页。 */
+    onLoadMore: () -> Unit = {},
 ) {
     Box(
         modifier = modifier
@@ -79,6 +86,9 @@ fun ContentPane(
                         onCardClick = onCardClick,
                         pendingFocus = pendingGridFocus,
                         onConsumeFocus = onConsumeGridFocus,
+                        lastFocusedKey = lastFocusedKey,
+                        onLoadMore = onLoadMore,
+                        appending = state.appending,
                     )
                 }
             }
@@ -115,18 +125,50 @@ private fun CardGrid(
     onCardClick: (HomeCard) -> Unit,
     pendingFocus: Boolean,
     onConsumeFocus: () -> Unit,
+    lastFocusedKey: String?,
+    onLoadMore: () -> Unit,
+    appending: Boolean,
 ) {
     val isTv = LocalIsTvDevice.current
     val gridState = rememberLazyGridState()
     val gridFocusRequester = remember { FocusRequester() }
+    val targetFocusRequester = remember { FocusRequester() }
 
-    // 从详情页返回 → 主动把焦点请回 grid 容器，focusRestorer 自然接管到上次卡片。
-    // pendingFocus 仅当为 true 时启动一次焦点请求，随后立刻消费成 false 防止再次抢焦。
-    LaunchedEffect(pendingFocus, cards.size) {
-        if (isTv && pendingFocus && cards.isNotEmpty()) {
-            try { gridFocusRequester.requestFocus() } catch (_: Throwable) {}
-            onConsumeFocus()
+    val targetIndex = remember(cards, lastFocusedKey) {
+        if (lastFocusedKey == null) -1 else cards.indexOfFirst { it.stableKey == lastFocusedKey }
+    }
+
+    // 从详情页返回 → 优先：定位到上次焦点卡 + scrollToItem + requestFocus 到该卡。
+    // 没有 lastFocusedKey（或卡片被刷新换掉了）→ fallback 到 grid 容器 + focusRestorer。
+    // pendingFocus 仅 true 时启动一次焦点请求，立刻消费成 false 防止重复抢焦。
+    LaunchedEffect(pendingFocus, cards.size, targetIndex) {
+        if (!isTv || !pendingFocus || cards.isEmpty()) return@LaunchedEffect
+        if (targetIndex >= 0) {
+            runCatching { gridState.scrollToItem(targetIndex) }
+            // grid attach 完一帧后再请焦，避免 layout 还没就绪
+            kotlinx.coroutines.delay(16)
+            runCatching { targetFocusRequester.requestFocus() }
+        } else {
+            runCatching { gridFocusRequester.requestFocus() }
         }
+        onConsumeFocus()
+    }
+
+    // 滚到末尾自动加载更多（仅 RECOMMEND 在 VM 内会真正追加；其他分区 no-op）
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val info = gridState.layoutInfo
+            val total = info.totalItemsCount
+            if (total == 0) false
+            else {
+                val last = info.visibleItemsInfo.lastOrNull()?.index ?: -1
+                // 距离末尾 ≤ 8 项时预拉下一页
+                last >= total - 8
+            }
+        }
+    }
+    LaunchedEffect(shouldLoadMore, appending, cards.size) {
+        if (shouldLoadMore && !appending && cards.isNotEmpty()) onLoadMore()
     }
 
     LazyVerticalGrid(
@@ -153,9 +195,40 @@ private fun CardGrid(
                 }
             },
         ) { card ->
+            val itemModifier = if (isTv && card.stableKey == lastFocusedKey) {
+                Modifier.focusRequester(targetFocusRequester)
+            } else {
+                Modifier
+            }
             when (card) {
-                is HomeCard.Video -> VideoCard(card = card, onClick = { onCardClick(card) })
-                is HomeCard.Live -> LiveRoomCard(card = card, onClick = { onCardClick(card) })
+                is HomeCard.Video -> VideoCard(
+                    card = card,
+                    onClick = { onCardClick(card) },
+                    modifier = itemModifier,
+                )
+                is HomeCard.Live -> LiveRoomCard(
+                    card = card,
+                    onClick = { onCardClick(card) },
+                    modifier = itemModifier,
+                )
+            }
+        }
+        if (appending) {
+            item(
+                span = { GridItemSpan(maxLineSpan) },
+                contentType = "loading_footer",
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(vertical = 24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    CircularProgressIndicator(
+                        color = MaterialTheme.colorScheme.primary,
+                        strokeWidth = 2.dp,
+                    )
+                }
             }
         }
     }
