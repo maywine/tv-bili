@@ -41,6 +41,11 @@ sealed interface VideoDetailState {
          * 每次 DanmakuSurface 进合成时按 bytes 现场重建 parser。
          */
         val danmakuXml: ByteArray?,
+        /**
+         * 走了 PGC `try_look=1` fallback——当前流是试看片段（非大会员看的前 5-15 分钟）。
+         * UI 据此画「试看中」角标；过期 ENDED 触发自动续播相关视频时也基于此跳过历史进度。
+         */
+        val isTrialPlay: Boolean = false,
     ) : VideoDetailState
     data class Error(val message: String) : VideoDetailState
 }
@@ -139,6 +144,33 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    /**
+     * 拉取 playurl，自动 UGC → PGC（try_look=1）fallback。
+     *
+     * 流程：
+     * 1. 先调 UGC `x/player/wbi/playurl`——支持普通投稿视频与多数公开 PGC bvid
+     * 2. 失败时无条件再调 PGC `pgc/player/web/playurl?try_look=1`——大会员锁的综艺/番剧/电影
+     *    在此分支拿到试看流（前 5-15 分钟）
+     * 3. PGC 也失败 → 抛 UGC 的原始异常（信息更贴近用户预期，如「-10403 大会员专享」）
+     *
+     * @return Pair<playurl 数据, 是否走的试看分支>
+     */
+    private suspend fun loadPlayUrlOrTryLook(
+        bvid: String,
+        cid: Long,
+        qn: Int,
+    ): Pair<PlayUrlData, Boolean> {
+        val ugc = repo.loadPlayUrl(bvid, cid, qn)
+        if (ugc.isSuccess) return ugc.getOrThrow() to false
+        val ugcError = ugc.exceptionOrNull() ?: IllegalStateException("playurl failed")
+        Log.d(TAG, "UGC playurl failed (${ugcError.message}); fallback PGC try_look")
+        val pgc = repo.loadPgcPlayUrl(bvid, cid, qn)
+        return pgc.fold(
+            onSuccess = { it to true },
+            onFailure = { throw ugcError }, // 仍报原 UGC 错——更贴近用户认知（「大会员专享」之类）
+        )
+    }
+
     /** 自动重拉 playurl 续播——同 cid + 同 qn，新 URL 替换过期/出错 URL。次数封顶 [MAX_AUTO_RECOVER]。 */
     private fun refreshPlayUrlAfterError(ready: VideoDetailState.Ready) {
         if (autoRecoverAttempts >= MAX_AUTO_RECOVER) {
@@ -148,11 +180,13 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         autoRecoverAttempts++
         val savedPos = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
         viewModelScope.launch {
-            repo.loadPlayUrl(currentBvid, ready.detail.cid, _selectedQn.value).fold(
-                onSuccess = { newPlayUrl ->
-                    setPlayerMedia(newPlayUrl, resumeMs = savedPos)
-                    _state.value = ready.copy(playUrl = newPlayUrl)
-                    Log.d(TAG, "auto-recovered from playback error @ ${savedPos}ms (attempt $autoRecoverAttempts)")
+            runCatching {
+                loadPlayUrlOrTryLook(currentBvid, ready.detail.cid, _selectedQn.value)
+            }.fold(
+                onSuccess = { (newPlayUrl, isTrial) ->
+                    setPlayerMedia(newPlayUrl, resumeMs = if (isTrial) 0L else savedPos)
+                    _state.value = ready.copy(playUrl = newPlayUrl, isTrialPlay = isTrial)
+                    Log.d(TAG, "auto-recovered from playback error @ ${savedPos}ms (attempt $autoRecoverAttempts, trial=$isTrial)")
                 },
                 onFailure = { e ->
                     Log.e(TAG, "auto-recover failed", e)
@@ -249,10 +283,10 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         currentPageIndex = index
         viewModelScope.launch {
             runCatching {
-                val playUrl = repo.loadPlayUrl(currentBvid, target.cid, _selectedQn.value).getOrThrow()
+                val (playUrl, isTrial) = loadPlayUrlOrTryLook(currentBvid, target.cid, _selectedQn.value)
                 val newDetail = ready.detail.copy(cid = target.cid, duration = target.duration)
                 setPlayerMedia(playUrl, resumeMs = 0L)
-                _state.value = VideoDetailState.Ready(newDetail, playUrl, null)
+                _state.value = VideoDetailState.Ready(newDetail, playUrl, null, isTrial)
                 // 弹幕跟随分 P 重拉
                 launch {
                     val xml = withContext(Dispatchers.IO) {
@@ -304,19 +338,20 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
             // 表现为「黑屏 + 声音」直到下次重组（用户按 OK 触发）才恢复。
             runCatching {
                 val detail = repo.loadDetail(bvid).getOrThrow()
-                val playUrl = repo.loadPlayUrl(bvid, detail.cid, _selectedQn.value).getOrThrow()
-                detail to playUrl
+                val (playUrl, isTrial) = loadPlayUrlOrTryLook(bvid, detail.cid, _selectedQn.value)
+                Triple(detail, playUrl, isTrial)
             }.fold(
-                onSuccess = { (detail, playUrl) ->
+                onSuccess = { (detail, playUrl, isTrial) ->
                     // 历史进度续播：(bvid, cid) 双键匹配；过早 / 已看完 / 异常数据返 0
-                    val resumeMs = historyRepo.getResumePositionMs(
+                    // 试看片段不续播——试看流时长 ≠ 正片，旧 lastPositionMs 没意义
+                    val resumeMs = if (isTrial) 0L else historyRepo.getResumePositionMs(
                         bvid = bvid,
                         cid = detail.cid,
                         durationSec = detail.duration,
                     )
                     if (resumeMs > 0L) Log.d(TAG, "resume @ ${resumeMs}ms for $bvid")
                     setPlayerMedia(playUrl, resumeMs = resumeMs)
-                    _state.value = VideoDetailState.Ready(detail, playUrl, null)
+                    _state.value = VideoDetailState.Ready(detail, playUrl, null, isTrial)
                     // 进入详情页 = 刷新元信息记录；旧 lastPositionMs 由 [HistoryRepository.recordView]
                     // 内部保留（避免秒退丢进度）。退出时 recordProgress 写覆盖最新位置。
                     launch {
@@ -384,12 +419,14 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         _selectedQn.value = qn
         val cur = _state.value as? VideoDetailState.Ready ?: return
         viewModelScope.launch {
-            repo.loadPlayUrl(currentBvid, cur.detail.cid, qn).fold(
-                onSuccess = { newPlayUrl ->
+            runCatching {
+                loadPlayUrlOrTryLook(currentBvid, cur.detail.cid, qn)
+            }.fold(
+                onSuccess = { (newPlayUrl, isTrial) ->
                     val savedPosition = player.currentPosition
                     setPlayerMedia(newPlayUrl)
                     player.seekTo(savedPosition)
-                    _state.value = cur.copy(playUrl = newPlayUrl)
+                    _state.value = cur.copy(playUrl = newPlayUrl, isTrialPlay = isTrial)
                 },
                 onFailure = { e ->
                     Log.e(TAG, "selectQn($qn) failed", e)

@@ -29,6 +29,9 @@ class VideoRepository {
     /**
      * @param qn 目标清晰度，默认 80=1080P。B 站可能因登录态降级到 32/64。
      *           接口返回的 `data.quality` 是实际清晰度（可能 ≠ qn）。
+     *
+     * 大会员锁定的 PGC（番剧 / 综艺会员专享）会回 -10403 / -404；调用方据此走
+     * [loadPgcPlayUrl] + `try_look=1` 拿试看流，与 B 站手机版「免费试看」一致。
      */
     suspend fun loadPlayUrl(bvid: String, cid: Long, qn: Int = 80): Result<PlayUrlData> = runCatching {
         val (img, sub) = WbiKeyManager.getKeys().getOrThrow()
@@ -44,6 +47,29 @@ class VideoRepository {
         val resp = NetworkModule.videoApi.getPlayUrl(signed)
         require(resp.code == 0) { "playurl code=${resp.code} msg=${resp.message}" }
         checkNotNull(resp.data) { "playurl data null for $bvid cid=$cid qn=$qn" }
+    }
+
+    /**
+     * PGC 视频播放地址（番剧 / 综艺 / 电影）。
+     *
+     * - **试看**：`try_look=1` 让非大会员拿前 5-15 分钟试看流。试看与正片的 DashStream
+     *   结构相同，[dev.tvbili.player.StreamSelector] 直接复用
+     * - **响应根字段是 `result`**：PGC 域走自己的 envelope，与 UGC 的 `data` 不一致
+     * - 仍可能 -10403：账号被风控、地区受限、未上线试看（极少数会员专享）
+     */
+    suspend fun loadPgcPlayUrl(bvid: String, cid: Long, qn: Int = 80): Result<PlayUrlData> = runCatching {
+        val params = mapOf(
+            "bvid" to bvid,
+            "cid" to cid.toString(),
+            "qn" to qn.toString(),
+            "fnval" to "4048",
+            "fnver" to "0",
+            "fourk" to "1",
+            "try_look" to "1",
+        )
+        val resp = NetworkModule.pgcApi.getPgcPlayUrl(params)
+        require(resp.code == 0) { "pgc playurl code=${resp.code} msg=${resp.message}" }
+        checkNotNull(resp.result) { "pgc playurl result null for $bvid cid=$cid qn=$qn" }
     }
 
     /**

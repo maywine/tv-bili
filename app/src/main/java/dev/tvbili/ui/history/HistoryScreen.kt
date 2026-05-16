@@ -85,7 +85,8 @@ fun HistoryScreen(
                             card = card,
                             onClick = { onNavigateToVideo(card.bvid) },
                         )
-                        is HomeCard.Live -> Unit // 历史记录只可能是视频
+                        // 历史记录只可能是 UGC 视频；其余变体仅为穷尽 when，运行时不会命中
+                        is HomeCard.Live, is HomeCard.PgcSeason -> Unit
                     }
                 }
             }

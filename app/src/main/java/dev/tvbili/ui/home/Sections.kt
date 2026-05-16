@@ -20,7 +20,12 @@ enum class SectionId(
     RANKING("排行", 0, Kind.RANKING),
     BANGUMI("番剧", 13, Kind.RANKING),
     CINEMA("电影", 23, Kind.RANKING),
-    VARIETY("综艺", 5, Kind.RANKING),
+    /**
+     * 综艺：走 PGC index 接口（season_type=7），返回真正的综艺节目（向往的生活/奔跑吧 等），
+     * 而不是 ranking/v2 rid=5 那种「娱乐分区 UGC 短视频」。
+     * [rid] 字段在 Kind.PGC 下重用为 `season_type` 值。
+     */
+    VARIETY("综艺", 7, Kind.PGC),
     ANIME_AREA("动画", 1, Kind.RANKING),
     GAME_AREA("游戏", 4, Kind.RANKING),
     MUSIC_AREA("音乐", 3, Kind.RANKING),
@@ -28,7 +33,7 @@ enum class SectionId(
     HISTORY("历史", -1, Kind.HISTORY),
     FAVORITE("收藏", -1, Kind.PLACEHOLDER);
 
-    enum class Kind { RECOMMEND, POPULAR, LIVE, RANKING, HISTORY, PLACEHOLDER }
+    enum class Kind { RECOMMEND, POPULAR, LIVE, RANKING, PGC, HISTORY, PLACEHOLDER }
 }
 
 /** 分区数据加载的 5 态机。 */

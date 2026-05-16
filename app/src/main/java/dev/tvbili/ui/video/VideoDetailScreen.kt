@@ -239,6 +239,23 @@ fun VideoDetailScreen(
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
+                // 试看中角标——右上角小红章，提示「这是非大会员的试看片段」；
+                // 与浮层 / 进度条互不阻挡，始终可见
+                if (s.isTrialPlay) {
+                    Text(
+                        text = "试看",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(12.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primary,
+                                RoundedCornerShape(4.dp),
+                            )
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    )
+                }
                 // 简化进度条 —— 与完整菜单互斥（菜单显时不渲，避免叠加）
                 AnimatedVisibility(
                     visible = progressBarVisible && !controlsVisible,

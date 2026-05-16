@@ -6,6 +6,7 @@ import dev.tvbili.data.api.FavoriteApi
 import dev.tvbili.data.api.LiveApi
 import dev.tvbili.data.api.MainApi
 import dev.tvbili.data.api.PassportApi
+import dev.tvbili.data.api.PgcApi
 import dev.tvbili.data.api.SearchApi
 import dev.tvbili.data.api.VideoApi
 import kotlinx.serialization.json.Json
@@ -103,6 +104,15 @@ object NetworkModule {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(FavoriteApi::class.java)
+    }
+
+    val pgcApi: PgcApi by lazy {
+        Retrofit.Builder()
+            .baseUrl("https://api.bilibili.com/")
+            .client(okHttpClient)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+            .create(PgcApi::class.java)
     }
 
     fun init(context: Context) {

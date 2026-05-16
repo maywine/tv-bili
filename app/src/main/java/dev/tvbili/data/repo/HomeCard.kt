@@ -44,6 +44,23 @@ sealed interface HomeCard {
     ) : HomeCard {
         override val stableKey: String get() = "live_$roomId"
     }
+
+    /**
+     * PGC 季度卡（综艺 / 番剧 / 电影 等）。一条 = 一部节目。
+     * 点击时调用方需要先解析 [seasonId] → 最新一集 bvid，再走 [Video] 的播放流程。
+     */
+    @Immutable
+    data class PgcSeason(
+        val seasonId: Long,
+        override val title: String,
+        override val coverUrl: String,
+        /** 「更新至第 10 期」类提示；为空时卡片不展示。 */
+        val indexShow: String,
+        /** "会员" / "付费"；空字串表示无标签。 */
+        val badge: String,
+    ) : HomeCard {
+        override val stableKey: String get() = "pgc_$seasonId"
+    }
 }
 
 fun RecommendItem.toHomeCard(): HomeCard.Video = HomeCard.Video(

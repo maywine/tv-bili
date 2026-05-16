@@ -33,6 +33,7 @@ import dev.tvbili.data.repo.HomeCard
 import dev.tvbili.tv.LocalIsTvDevice
 import dev.tvbili.tv.tvFocusable
 import dev.tvbili.ui.home.components.LiveRoomCard
+import dev.tvbili.ui.home.components.PgcSeasonCard
 import dev.tvbili.ui.home.components.VideoCard
 
 @Composable
@@ -49,6 +50,8 @@ fun ContentPane(
     lastFocusedKey: String? = null,
     /** 滑到列表尾部时调用：仅 [SectionId.Kind.RECOMMEND] 在 ViewModel 内追加分页。 */
     onLoadMore: () -> Unit = {},
+    /** 当前正在解析 season → bvid 的 PGC 卡 stableKey；其它卡正常渲染。 */
+    resolvingPgcKey: String? = null,
 ) {
     Box(
         modifier = modifier
@@ -89,6 +92,7 @@ fun ContentPane(
                         lastFocusedKey = lastFocusedKey,
                         onLoadMore = onLoadMore,
                         appending = state.appending,
+                        resolvingPgcKey = resolvingPgcKey,
                     )
                 }
             }
@@ -128,6 +132,7 @@ private fun CardGrid(
     lastFocusedKey: String?,
     onLoadMore: () -> Unit,
     appending: Boolean,
+    resolvingPgcKey: String?,
 ) {
     val isTv = LocalIsTvDevice.current
     val gridState = rememberLazyGridState()
@@ -192,6 +197,7 @@ private fun CardGrid(
                 when (it) {
                     is HomeCard.Video -> "video_card"
                     is HomeCard.Live -> "live_card"
+                    is HomeCard.PgcSeason -> "pgc_card"
                 }
             },
         ) { card ->
@@ -209,6 +215,12 @@ private fun CardGrid(
                 is HomeCard.Live -> LiveRoomCard(
                     card = card,
                     onClick = { onCardClick(card) },
+                    modifier = itemModifier,
+                )
+                is HomeCard.PgcSeason -> PgcSeasonCard(
+                    card = card,
+                    onClick = { onCardClick(card) },
+                    resolving = (card.stableKey == resolvingPgcKey),
                     modifier = itemModifier,
                 )
             }

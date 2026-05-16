@@ -7,10 +7,14 @@ import androidx.lifecycle.viewModelScope
 import dev.tvbili.data.repo.HistoryRepository
 import dev.tvbili.data.repo.HomeCard
 import dev.tvbili.data.repo.HomeRepository
+import dev.tvbili.data.repo.PgcRepository
 import dev.tvbili.data.store.SectionConfigStore
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -20,6 +24,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repo = HomeRepository()
     private val historyRepo = HistoryRepository(application)
+    private val pgcRepo = PgcRepository()
 
     /** 用户选定分区（reactive）。SideBar / HomeScreen 都从这里读。 */
     val sections: StateFlow<List<SectionId>> =
@@ -97,6 +102,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         SectionId.Kind.POPULAR -> 2L * 60 * 1000
         SectionId.Kind.LIVE -> 2L * 60 * 1000
         SectionId.Kind.RANKING -> 5L * 60 * 1000
+        SectionId.Kind.PGC -> 10L * 60 * 1000 // 综艺/番剧更新频率低，10 min 够新鲜
         SectionId.Kind.HISTORY -> 0L
         SectionId.Kind.PLACEHOLDER -> Long.MAX_VALUE
     }
@@ -145,6 +151,45 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun consumePendingGridFocus() { _pendingGridFocus.value = false }
 
+    /**
+     * PGC season → bvid 解析中标志位；UI 用它画 loading 蒙层避免用户连点。
+     * stableKey = HomeCard.stableKey 形态（"pgc_${seasonId}"），仅一条进行中。
+     */
+    private val _resolvingPgcKey = MutableStateFlow<String?>(null)
+    val resolvingPgcKey: StateFlow<String?> = _resolvingPgcKey.asStateFlow()
+
+    /**
+     * PGC 卡解析完发射的 bvid 事件。MainActivity 收到后 `screen = AppScreen.Video(bvid)`。
+     * 用 SharedFlow（replay=0）避免重组重复消费；extraBufferCapacity=1 防止快速点击丢事件。
+     */
+    private val _pgcNavigateEvent = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 1,
+    )
+    val pgcNavigateEvent: SharedFlow<String> = _pgcNavigateEvent.asSharedFlow()
+
+    /**
+     * 点击 PGC 季度卡：拉 season 详情 → 取最新一集 bvid → 发 navigate 事件。
+     * 失败时仅记日志（UI 自动消除 loading），不阻断用户重试。
+     */
+    fun openPgcSeason(card: HomeCard.PgcSeason) {
+        if (_resolvingPgcKey.value == card.stableKey) return // 防连点
+        _resolvingPgcKey.value = card.stableKey
+        viewModelScope.launch {
+            pgcRepo.resolveLatestEpisodeBvid(card.seasonId).fold(
+                onSuccess = { bvid ->
+                    lastFocusedKey[_selectedSection.value] = card.stableKey
+                    _pendingGridFocus.value = true
+                    _pgcNavigateEvent.tryEmit(bvid)
+                },
+                onFailure = { e ->
+                    Log.w(TAG, "resolvePgcSeason(${card.seasonId}) failed: ${e.message}")
+                },
+            )
+            _resolvingPgcKey.value = null
+        }
+    }
+
     /** ContentPane 重新挂载时读：要把焦点钉回哪张卡。null = 走 grid 默认首项。 */
     fun focusKeyFor(section: SectionId): String? = lastFocusedKey[section]
 
@@ -173,6 +218,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 SectionId.Kind.POPULAR -> repo.loadPopular(page = 1)
                 SectionId.Kind.LIVE -> repo.loadLive(page = 1)
                 SectionId.Kind.RANKING -> repo.loadRanking(rid = section.rid)
+                SectionId.Kind.PGC ->
+                    // PGC 分区把 rid 字段重用为 season_type
+                    pgcRepo.loadSeasonIndex(seasonType = section.rid)
                 SectionId.Kind.HISTORY -> runCatching { historyRepo.getRecent() }
                 SectionId.Kind.PLACEHOLDER -> return@launch // 上面已 return
             }
