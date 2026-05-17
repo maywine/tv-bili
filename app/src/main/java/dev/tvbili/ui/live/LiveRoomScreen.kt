@@ -39,6 +39,9 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
@@ -80,9 +83,21 @@ fun LiveRoomScreen(
 
     BackHandler(enabled = controlsVisible) { controlsVisible = false }
 
-    // 离开屏幕暂停 player 并断开 ws，避免后台继续吃流量 / 出声
-    DisposableEffect(Unit) {
+    // 按 Home / 切后台必须立刻停声——直播屏 Composable 不会从树上移除，光靠 onDispose
+    // 拦不住后台播放，必须监听 Lifecycle.ON_PAUSE。onDispose 兜底页面真正退出时的清理。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                runCatching {
+                    vm.player.playWhenReady = false
+                    vm.player.pause()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             runCatching {
                 vm.player.playWhenReady = false
                 vm.player.pause()
