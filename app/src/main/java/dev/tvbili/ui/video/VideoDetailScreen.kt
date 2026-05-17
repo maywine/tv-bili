@@ -38,6 +38,9 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
@@ -101,10 +104,26 @@ fun VideoDetailScreen(
     // BackHandler 接管，单次返回即出页面。
     BackHandler(enabled = state is VideoDetailState.Error) { onBack() }
 
-    // 离开屏幕时：先把进度落盘（pause 前 currentPosition 仍可读），再暂停播放器。
-    // 不 release()——ViewModel 仍持有同一实例，下次进入可复用。
-    DisposableEffect(Unit) {
+    // 暂停策略：
+    // 1) ON_PAUSE（Home / 切应用 / 锁屏）→ 立刻 pause。本项目不做后台播放，避免「按 Home
+    //    回桌面后声音还在响」的体感。Home 键只触发 ON_PAUSE/ON_STOP，不会 dispose 当前
+    //    Composable，所以单靠 onDispose 拦不住。
+    // 2) onDispose（页面真正退出）→ 落盘进度 + pause；不 release()，ViewModel 仍持有同一
+    //    ExoPlayer 实例，下次进入可复用 surface。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) {
+                runCatching {
+                    vm.recordProgress()
+                    vm.player.playWhenReady = false
+                    vm.player.pause()
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
             runCatching {
                 vm.recordProgress()
                 vm.player.playWhenReady = false
