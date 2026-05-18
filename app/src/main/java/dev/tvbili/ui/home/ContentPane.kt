@@ -52,56 +52,65 @@ fun ContentPane(
     onLoadMore: () -> Unit = {},
     /** 当前正在解析 season → bvid 的 PGC 卡 stableKey；其它卡正常渲染。 */
     resolvingPgcKey: String? = null,
+    /**
+     * 分区上方插槽（如直播分区 Chip 栏）。null = 不显示；非空时整面板改为 Column 布局，
+     * header 永远可见，下方按 [state] 切 grid / loading / error / empty。
+     */
+    header: (@Composable () -> Unit)? = null,
 ) {
-    Box(
+    Column(
         modifier = modifier
             .fillMaxSize()
             .background(Color.Black)
             .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        when (state) {
-            SectionState.Idle, SectionState.Loading -> {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            is SectionState.Error -> {
-                ErrorView(
-                    message = state.message,
-                    onRetry = onRetry,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-
-            is SectionState.Loaded -> {
-                if (state.cards.isEmpty()) {
-                    Text(
-                        text = "空空如也",
-                        color = Color.LightGray,
+        if (header != null) header()
+        Box(modifier = Modifier.fillMaxSize()) {
+            when (state) {
+                SectionState.Idle, SectionState.Loading -> {
+                    CircularProgressIndicator(
                         modifier = Modifier.align(Alignment.Center),
-                    )
-                } else {
-                    CardGrid(
-                        section = section,
-                        cards = state.cards,
-                        onCardClick = onCardClick,
-                        pendingFocus = pendingGridFocus,
-                        onConsumeFocus = onConsumeGridFocus,
-                        lastFocusedKey = lastFocusedKey,
-                        onLoadMore = onLoadMore,
-                        appending = state.appending,
-                        resolvingPgcKey = resolvingPgcKey,
+                        color = MaterialTheme.colorScheme.primary,
                     )
                 }
-            }
 
-            is SectionState.Empty -> {
-                EmptyView(
-                    hint = state.hint,
-                    modifier = Modifier.align(Alignment.Center),
-                )
+                is SectionState.Error -> {
+                    ErrorView(
+                        message = state.message,
+                        onRetry = onRetry,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
+
+                is SectionState.Loaded -> {
+                    if (state.cards.isEmpty()) {
+                        Text(
+                            text = "空空如也",
+                            color = Color.LightGray,
+                            modifier = Modifier.align(Alignment.Center),
+                        )
+                    } else {
+                        CardGrid(
+                            section = section,
+                            cards = state.cards,
+                            onCardClick = onCardClick,
+                            pendingFocus = pendingGridFocus,
+                            onConsumeFocus = onConsumeGridFocus,
+                            lastFocusedKey = lastFocusedKey,
+                            onLoadMore = onLoadMore,
+                            appending = state.appending,
+                            resolvingPgcKey = resolvingPgcKey,
+                        )
+                    }
+                }
+
+                is SectionState.Empty -> {
+                    EmptyView(
+                        hint = state.hint,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
+                }
             }
         }
     }

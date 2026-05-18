@@ -9,6 +9,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.tvbili.data.repo.HomeCard
+import dev.tvbili.ui.home.components.LiveAreaChipRow
 
 @Composable
 fun HomeScreen(
@@ -25,6 +26,8 @@ fun HomeScreen(
     val state by vm.stateOf(selected).collectAsStateWithLifecycle()
     val pendingGridFocus by vm.pendingGridFocus.collectAsStateWithLifecycle()
     val resolvingPgcKey by vm.resolvingPgcKey.collectAsStateWithLifecycle()
+    val selectedLiveParentId by vm.selectedLiveParentId.collectAsStateWithLifecycle()
+    val selectedLiveAreaId by vm.selectedLiveAreaId.collectAsStateWithLifecycle()
 
     // 点 PGC 综艺卡 → VM 异步解析 season → 发 bvid 事件 → 这里转 nav
     LaunchedEffect(Unit) {
@@ -63,6 +66,17 @@ fun HomeScreen(
             lastFocusedKey = vm.focusKeyFor(selected),
             onLoadMore = { vm.loadMore(selected) },
             resolvingPgcKey = resolvingPgcKey,
+            header = if (selected.kind == SectionId.Kind.LIVE) {
+                {
+                    LiveAreaChipRow(
+                        selectedParentId = selectedLiveParentId,
+                        selectedAreaId = selectedLiveAreaId,
+                        onSelect = vm::selectLiveArea,
+                    )
+                }
+            } else {
+                null
+            },
         )
     }
 }

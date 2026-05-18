@@ -41,8 +41,16 @@ class HomeRepository {
         resp.data?.list.orEmpty().map { it.toHomeCard() }
     }
 
-    suspend fun loadLive(page: Int = 1): Result<List<HomeCard>> = runCatching {
-        val resp = NetworkModule.liveApi.getLiveList(page = page)
+    suspend fun loadLive(
+        parentAreaId: Int = 0,
+        areaId: Int = 0,
+        page: Int = 1,
+    ): Result<List<HomeCard>> = runCatching {
+        val resp = NetworkModule.liveApi.getLiveList(
+            parentAreaId = parentAreaId,
+            areaId = areaId,
+            page = page,
+        )
         require(resp.code == 0) { "live code=${resp.code} msg=${resp.message}" }
         resp.data?.getAllRooms().orEmpty().map { it.toHomeCard() }
     }

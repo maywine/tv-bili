@@ -62,6 +62,16 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private var rcmdFreshIdx = 1
 
     /**
+     * 当前直播筛选的分区参数。0 / 0 = 全站（不带分区参数走 getRoomList）。
+     * 一级 / 二级语义见 [dev.tvbili.ui.home.components.LiveAreaWhitelist]。
+     */
+    private val _selectedLiveParentId = MutableStateFlow(0)
+    val selectedLiveParentId: StateFlow<Int> = _selectedLiveParentId.asStateFlow()
+
+    private val _selectedLiveAreaId = MutableStateFlow(0)
+    val selectedLiveAreaId: StateFlow<Int> = _selectedLiveAreaId.asStateFlow()
+
+    /**
      * PGC 分区已加载到第几页。`load()` 重置为 1；`loadMore()` 成功一次 +1。
      * 各 PGC 分区独立计数——CINEMA 翻到第 3 页时切到 VARIETY 不影响后者从 1 开始。
      */
@@ -80,6 +90,18 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    /**
+     * 用户在直播分区栏切了某个 chip。
+     * - 同 (parent, area) 再选：短路（chip 焦点扫过同一项不会重发请求）。
+     * - 切到新值：强制重新 load(LIVE)，旧 cards 跟新筛选条件不匹配，TTL 不再适用。
+     */
+    fun selectLiveArea(parentId: Int, areaId: Int) {
+        if (_selectedLiveParentId.value == parentId && _selectedLiveAreaId.value == areaId) return
+        _selectedLiveParentId.value = parentId
+        _selectedLiveAreaId.value = areaId
+        load(SectionId.LIVE)
     }
 
     fun stateOf(section: SectionId): StateFlow<SectionState> =
@@ -263,7 +285,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 SectionId.Kind.RECOMMEND ->
                     repo.loadRecommend(rcmdFreshIdx).also { rcmdFreshIdx++ }
                 SectionId.Kind.POPULAR -> repo.loadPopular(page = 1)
-                SectionId.Kind.LIVE -> repo.loadLive(page = 1)
+                SectionId.Kind.LIVE -> repo.loadLive(
+                    parentAreaId = _selectedLiveParentId.value,
+                    areaId = _selectedLiveAreaId.value,
+                    page = 1,
+                )
                 SectionId.Kind.RANKING -> repo.loadRanking(rid = section.rid)
                 SectionId.Kind.PGC ->
                     // PGC 分区把 rid 字段重用为 season_type
