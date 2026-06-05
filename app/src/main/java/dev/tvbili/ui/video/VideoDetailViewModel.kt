@@ -17,6 +17,9 @@ import dev.tvbili.data.repo.VideoRepository
 import dev.tvbili.net.NetworkModule
 import dev.tvbili.player.PlayerBuilder
 import dev.tvbili.player.StreamSelector
+import dev.tvbili.player.WatchdogVerdict
+import dev.tvbili.player.decideWatchdog
+import dev.tvbili.player.qnAfterDecoderError
 import dev.tvbili.player.resolvePlayerBufferPolicy
 import dev.tvbili.tv.TvUtils
 import kotlinx.coroutines.Dispatchers
@@ -61,13 +64,14 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     val state: StateFlow<VideoDetailState> = _state.asStateFlow()
 
     /**
-     * 用户选定清晰度。默认 4K（qn=120）。
+     * 用户选定清晰度。默认 4K（qn=120）——目标设备能解 4K。
      *
-     * - 走 `fnval=4048` + `fourk=1`（[VideoRepository.loadPlayUrl]）才能拿到 4K dash 流
-     * - 4K 通常需要大会员，账号不够档时 B 站只返低清；[StreamSelector] 会自动降档到
-     *   ≤ targetQn 的最高一档（120 → 116 → 112 → 80 → ...）
-     * - x86 模拟器解 4K 会吃力——真机/盒子是目标，模拟器属测试场景，用户可在
-     *   Overlay chip 现场切 720P/1080P
+     * - 走 `fnval=4048` + `fourk=1` 才能拿到 4K dash 流；账号不够档时 B 站只返低清，
+     *   [StreamSelector] 自动降到 ≤ targetQn 的最高一档（120 → 116 → 112 → 80 → ...）
+     * - 兜底：万一某设备/某片源 4K HEVC 硬解失败，[onPlayerError] 的解码分支会自动降到有
+     *   H.264 的档（[qnAfterDecoderError]），不会卡死翻 Error——只在真·解码报错时触发，
+     *   不影响能跑 4K 的设备
+     * - 用户可在 Overlay chip 现场切 720P/1080P
      */
     private val _selectedQn = MutableStateFlow(120)
     val selectedQn: StateFlow<Int> = _selectedQn.asStateFlow()
@@ -92,7 +96,16 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     /** 多 P 视频里当前播放的分 P 索引（0-based）。 */
     private var currentPageIndex: Int = 0
     private var watchdogJob: Job? = null
-    /** 自动恢复尝试次数（一次 load 周期内）；超过则停手避免死循环 */
+    /**
+     * 在飞行中的自动恢复协程——单飞守卫：看门狗与 [onPlayerError] 不会并发各起一个恢复，
+     * 也覆盖「异步重拉 playurl + re-prepare」的整个窗口，避免看门狗中途再触发把尝试次数双扣。
+     */
+    private var recoverJob: Job? = null
+    /**
+     * **连续**自动恢复失败次数；超过 [MAX_AUTO_RECOVER] 才翻 Error。
+     * 看门狗一旦观测到位置正常推进（恢复确实生效）即清零（见 [startWatchdog] 的 PROGRESS 分支），
+     * 避免一部长电影里几次互不相关的瞬时卡顿累计撞死。
+     */
     private var autoRecoverAttempts: Int = 0
 
     /** 当前视频的相关推荐列表；播完末 P 时取首个自动续播。在视频 Ready 后异步填充。 */
@@ -124,8 +137,10 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
          * 1. DASH segment URL 过期（B 站 CDN URL 含 expires 时间戳，2 h 左右失效）
          * 2. 网络抖动后 ExoPlayer source 反复重试失败最终抛 PlaybackException
          *
-         * 处理：仅一次自动重拉 playurl + 续播到当前位置。仍失败则把 UI 翻 Error，
-         * 用户可重试。播放器内部错误（解码 / 渲染）不重拉——重拉拿不到不同 codec 帮不了。
+         * 处理分流：
+         * - **IO/网络类**：自动重拉 playurl + 续播到当前位置（[refreshPlayUrlAfterError]，连续失败封顶）
+         * - **解码器类**：同 codec 重拉没用，降清晰度到有 H.264 的档再播（[downgradeQualityAfterDecoderError]）
+         * - 其它（渲染等）：翻 Error 让用户重试
          */
         override fun onPlayerError(error: PlaybackException) {
             Log.w(TAG, "player error ${error.errorCode}: ${error.message}")
@@ -139,6 +154,11 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                 PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
                 PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS,
                 PlaybackException.ERROR_CODE_IO_UNSPECIFIED -> refreshPlayUrlAfterError(ready)
+                // 解码器扛不住（4K HEVC/AV1 硬解失败）：重拉同档没用——setEnableDecoderFallback
+                // 只换同 MIME 的解码器，弱盒子没有软解 HEVC/AV1 可退。降清晰度到有 H.264 的档再播。
+                PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+                PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+                PlaybackException.ERROR_CODE_DECODING_FAILED -> downgradeQualityAfterDecoderError(ready)
                 else -> _state.value = VideoDetailState.Error(error.message ?: "播放出错")
             }
         }
@@ -171,22 +191,31 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         )
     }
 
-    /** 自动重拉 playurl 续播——同 cid + 同 qn，新 URL 替换过期/出错 URL。次数封顶 [MAX_AUTO_RECOVER]。 */
+    /**
+     * 自动重拉 playurl 续播——同 cid + 同 qn，新 URL 替换过期/出错 URL。
+     *
+     * - **单飞**：已有恢复在飞行中直接返回，避免看门狗与 [onPlayerError] 并发双扣尝试次数
+     * - **续播位置**：一律续到 savedPos（含试看——重拉的是同一段试看流，clip 相对位置有效）；
+     *   旧逻辑试看续到 0 会每次从头重缓冲、又被看门狗误判，是「卡顿→重头→再卡」的根因。
+     *   超出新时长的 seek 由 ExoPlayer 自动夹到末尾，不会越界。
+     * - 连续失败封顶 [MAX_AUTO_RECOVER]；看门狗观测到位置推进会把计数清零（非连续失败不累计）。
+     */
     private fun refreshPlayUrlAfterError(ready: VideoDetailState.Ready) {
+        if (recoverJob?.isActive == true) return // 单飞守卫
         if (autoRecoverAttempts >= MAX_AUTO_RECOVER) {
             _state.value = VideoDetailState.Error("播放反复失败，请点击重试")
             return
         }
         autoRecoverAttempts++
         val savedPos = runCatching { player.currentPosition.coerceAtLeast(0L) }.getOrDefault(0L)
-        viewModelScope.launch {
+        recoverJob = viewModelScope.launch {
             runCatching {
                 loadPlayUrlOrTryLook(currentBvid, ready.detail.cid, _selectedQn.value)
             }.fold(
                 onSuccess = { (newPlayUrl, isTrial) ->
-                    setPlayerMedia(newPlayUrl, resumeMs = if (isTrial) 0L else savedPos)
+                    setPlayerMedia(newPlayUrl, resumeMs = savedPos)
                     _state.value = ready.copy(playUrl = newPlayUrl, isTrialPlay = isTrial)
-                    Log.d(TAG, "auto-recovered from playback error @ ${savedPos}ms (attempt $autoRecoverAttempts, trial=$isTrial)")
+                    Log.d(TAG, "auto-recovered @ ${savedPos}ms (attempt $autoRecoverAttempts, trial=$isTrial)")
                 },
                 onFailure = { e ->
                     Log.e(TAG, "auto-recover failed", e)
@@ -197,47 +226,72 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * 看门狗：每 [WATCHDOG_POLL_MS] 轮询一次，若 playWhenReady=true 且 currentPosition
-     * 连续两次相等（=「上次和这次都没动」），视为「卡死黑屏」走 [refreshPlayUrlAfterError]。
-     * 触发窗口 = 1 个 poll 周期；想更激进改 [WATCHDOG_POLL_MS] 即可。
+     * 解码器报错后降清晰度重播：把 qn 一步降到有 H.264 的档（[qnAfterDecoderError]）再走
+     * [refreshPlayUrlAfterError]——这样 [StreamSelector] 会选出 codecid=7 的 H.264 流，弱盒子能硬解。
+     * 复用 autoRecoverAttempts 上限避免死循环；已无更低档可降时翻 Error 并提示用户手动降画质。
+     */
+    private fun downgradeQualityAfterDecoderError(ready: VideoDetailState.Ready) {
+        if (recoverJob?.isActive == true) return
+        val lowered = qnAfterDecoderError(_selectedQn.value)
+        if (lowered == null) {
+            _state.value = VideoDetailState.Error("当前设备无法解码该视频，请尝试更低画质")
+            return
+        }
+        Log.w(TAG, "decoder error → downgrade qn ${_selectedQn.value} → $lowered")
+        _selectedQn.value = lowered
+        refreshPlayUrlAfterError(ready)
+    }
+
+    /**
+     * 看门狗：每 [WATCHDOG_POLL_MS] 轮询一次，把状态采样交给纯函数 [decideWatchdog] 裁决，
+     * 只在「真·无声卡死」时走 [refreshPlayUrlAfterError]。
      *
-     * 抓的是 ExoPlayer 内部仍报 READY/BUFFERING 但不抛 PlaybackException 的「无声卡死」——
-     * [Player.Listener.onPlayerError] 抓不到的那一类。
+     * 抓的是 ExoPlayer 仍报 [Player.STATE_READY]、本应推进、却连续 [dev.tvbili.player.STUCK_POLLS_BEFORE_RECOVER]
+     * 个轮询位置不动的卡死——[Player.Listener.onPlayerError] 抓不到的那一类。
      *
-     * 早退条件（不算卡死）：
-     * - state ≠ Ready：起播未完成 / 出错 / 加载中，本来就该不动
-     * - playWhenReady=false：用户主动暂停
-     * - playbackState=ENDED：正常播完（由 ENDED listener 续播）
-     * - 接近末尾（pos ≥ duration - 1s）：最后一秒数值抖动，避免误判
+     * **关键修正**：正常重缓冲（[Player.STATE_BUFFERING]）位置冻结是健康的，绝不当卡死；
+     * 恢复飞行中（[recoverJob] 活跃）整段跳过；位置正常推进则把 [autoRecoverAttempts] 清零。
+     * 这三点合起来根治了「4K 电影重缓冲被误判 → 整流重拉 → 越拉越卡 → 撞满次数翻 Error」。
      */
     private fun startWatchdog() {
         watchdogJob?.cancel()
         watchdogJob = viewModelScope.launch {
             var lastPos = -1L
+            var stallStreak = 0
             while (true) {
                 delay(WATCHDOG_POLL_MS)
                 val s = _state.value
                 if (s !is VideoDetailState.Ready) {
-                    lastPos = -1L; continue
+                    lastPos = -1L; stallStreak = 0; continue
                 }
                 val playing = runCatching { player.playWhenReady }.getOrDefault(false)
                 val state = runCatching { player.playbackState }.getOrDefault(Player.STATE_IDLE)
                 val pos = runCatching { player.currentPosition }.getOrDefault(0L)
                 val dur = runCatching { player.duration }.getOrDefault(0L)
-                if (!playing || state == Player.STATE_ENDED) {
-                    lastPos = pos; continue
-                }
-                if (dur > 0L && pos >= dur - 1_000L) {
-                    lastPos = pos; continue
-                }
-                // 连续两次同 pos = 至少 1 个 poll 周期没推进 → 自动恢复
-                // lastPos == -1L 表示第一次采样，没基线可比，先记下来下轮再说
-                if (lastPos != -1L && pos == lastPos) {
-                    Log.w(TAG, "watchdog: stuck @${pos}ms for ≥${WATCHDOG_POLL_MS}ms → auto-recover")
-                    refreshPlayUrlAfterError(s)
-                    lastPos = -1L // 重启采样基线，避免恢复期间又被同 pos 二次触发
-                } else {
-                    lastPos = pos
+                when (
+                    decideWatchdog(
+                        playbackState = state,
+                        playWhenReady = playing,
+                        pos = pos,
+                        dur = dur,
+                        lastPos = lastPos,
+                        stallStreak = stallStreak,
+                        recovering = recoverJob?.isActive == true,
+                    )
+                ) {
+                    WatchdogVerdict.RECOVER -> {
+                        Log.w(TAG, "watchdog: READY but frozen @${pos}ms for ≥$stallStreak polls → auto-recover")
+                        lastPos = -1L; stallStreak = 0
+                        refreshPlayUrlAfterError(s)
+                    }
+                    WatchdogVerdict.STUCK_TICK -> stallStreak += 1 // 保留 lastPos，继续累计
+                    WatchdogVerdict.PROGRESS -> {
+                        lastPos = pos; stallStreak = 0
+                        autoRecoverAttempts = 0 // 确认恢复健康 → 连续失败计数清零
+                    }
+                    WatchdogVerdict.RESET_BASELINE -> {
+                        lastPos = pos; stallStreak = 0
+                    }
                 }
             }
         }
@@ -327,6 +381,8 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         currentBvid = bvid
         currentPageIndex = 0
         autoRecoverAttempts = 0
+        recoverJob?.cancel() // 取消上一个视频可能仍在飞行的恢复，避免它回写到新视频
+        recoverJob = null
         relatedQueue = emptyList()
         pendingAutoAdvanceOnRelatedReady = false
         _state.value = VideoDetailState.Loading(bvid)
@@ -484,6 +540,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     override fun onCleared() {
         super.onCleared()
         watchdogJob?.cancel()
+        recoverJob?.cancel()
         runCatching { player.release() }
     }
 

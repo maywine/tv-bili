@@ -12,7 +12,16 @@ import androidx.media3.common.C
  * - **老 TV / 1 GB 盒子**：32 MB 硬封顶 + 30 s 上限，防止 native heap 打爆
  * - **桌面 / 非 TV**：不字节封顶，按时间走
  *
- * 数值移植自 BiliPai `feature/video/state/VideoPlayerState.kt:88-105`，TV 分支验证过。
+ * **[bufferForPlaybackAfterRebufferMs]（卡顿后续播阈值）是本策略的关键**：网络卡顿进入
+ * 重缓冲后，ExoPlayer 要先攒够这么多媒体才恢复播放。旧值 ~3 s 太小——攒一点点就续播、
+ * 马上又卡，反复抖动。现拉到 ~十几秒（中端 15 s / 老盒 12 s），一次卡顿攒够再连续播。
+ * media3 1.5.1 `DefaultLoadControl.shouldStartPlayback` 实测：续播时机 = min(本时间阈值,
+ * 字节封顶对应秒数)；上述带宽下字节封顶都填不满 ≤ 该时长，故恒由时间阈值兜底生效。
+ * 与看门狗（[decideWatchdog] 把 STATE_BUFFERING 视为健康、不误判卡死）配套，长重缓冲不会触发误恢复。
+ *
+ * 约束（DefaultLoadControl.Builder 强校验，违反抛 IllegalArgumentException）：
+ * `0 ≤ bufferForPlaybackMs ≤ minBufferMs ≤ maxBufferMs` 且 `0 ≤ bufferForPlaybackAfterRebufferMs ≤ minBufferMs`。
+ *
  * 纯 data class + 纯函数 —— 便于单元测试。
  */
 data class PlayerBufferPolicy(
@@ -39,21 +48,21 @@ fun resolvePlayerBufferPolicy(isTv: Boolean, totalMemMb: Long): PlayerBufferPoli
         isTv && totalMemMb >= MID_TIER_TV_MEM_MB -> PlayerBufferPolicy(
             minBufferMs = 20_000,
             maxBufferMs = 40_000,
-            bufferForPlaybackMs = 1_500,
-            bufferForPlaybackAfterRebufferMs = 3_000,
+            bufferForPlaybackMs = 1_500,         // 首播仍快起（1.5 s），只拉长卡顿后续播
+            bufferForPlaybackAfterRebufferMs = 15_000, // 卡顿后攒 15 s 再续播
             targetBufferBytes = 64 * 1024 * 1024, // 64 MB
         )
         isTv -> PlayerBufferPolicy(
             minBufferMs = 15_000,
             maxBufferMs = 30_000,
             bufferForPlaybackMs = 1_500,
-            bufferForPlaybackAfterRebufferMs = 3_000,
+            bufferForPlaybackAfterRebufferMs = 12_000, // 老盒攒 12 s 再续播（25 Mbps 峰值时 32 MB 封顶约 10.7 s 兜底）
             targetBufferBytes = 32 * 1024 * 1024, // 32 MB
         )
         else -> PlayerBufferPolicy(
-            minBufferMs = 12_000,
+            minBufferMs = 15_000,               // 抬到 15 s 以容纳 12 s 的卡顿后续播阈值
             maxBufferMs = 45_000,
             bufferForPlaybackMs = 1_000,
-            bufferForPlaybackAfterRebufferMs = 2_200,
+            bufferForPlaybackAfterRebufferMs = 12_000,
         )
     }
