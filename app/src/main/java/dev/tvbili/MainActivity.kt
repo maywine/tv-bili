@@ -36,8 +36,12 @@ private sealed interface AppScreen {
     data object Profile : AppScreen
     data object History : AppScreen
     data object Favorite : AppScreen
-    data class Video(val bvid: String) : AppScreen
-    data class Live(val roomId: Long) : AppScreen
+    /**
+     * @param origin 返回时回到的来源页（无真正回退栈时由它记住「从哪进来的」）。
+     *   从历史/收藏/搜索点进视频，按返回应回到对应列表页，而非一律回首页。默认 [Home]。
+     */
+    data class Video(val bvid: String, val origin: AppScreen = Home) : AppScreen
+    data class Live(val roomId: Long, val origin: AppScreen = Home) : AppScreen
 }
 
 @UnstableApi
@@ -67,26 +71,28 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             screen is AppScreen.Video -> {
-                                BackHandler { screen = AppScreen.Home }
+                                val origin = (screen as AppScreen.Video).origin
+                                BackHandler { screen = origin }
                                 VideoDetailScreen(
                                     modifier = Modifier.padding(padding),
                                     bvid = (screen as AppScreen.Video).bvid,
-                                    onBack = { screen = AppScreen.Home },
+                                    onBack = { screen = origin },
                                 )
                             }
                             screen is AppScreen.Live -> {
-                                BackHandler { screen = AppScreen.Home }
+                                val origin = (screen as AppScreen.Live).origin
+                                BackHandler { screen = origin }
                                 LiveRoomScreen(
                                     modifier = Modifier.padding(padding),
                                     roomId = (screen as AppScreen.Live).roomId,
-                                    onBack = { screen = AppScreen.Home },
+                                    onBack = { screen = origin },
                                 )
                             }
                             screen is AppScreen.Search -> {
                                 BackHandler { screen = AppScreen.Home }
                                 SearchScreen(
                                     modifier = Modifier.padding(padding),
-                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid) },
+                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid, AppScreen.Search) },
                                     onBack = { screen = AppScreen.Home },
                                 )
                             }
@@ -109,7 +115,7 @@ class MainActivity : ComponentActivity() {
                                 HistoryScreen(
                                     modifier = Modifier.padding(padding),
                                     onBack = { screen = AppScreen.Profile },
-                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid) },
+                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid, AppScreen.History) },
                                 )
                             }
                             screen is AppScreen.Favorite -> {
@@ -117,7 +123,7 @@ class MainActivity : ComponentActivity() {
                                 FavoriteScreen(
                                     modifier = Modifier.padding(padding),
                                     onBack = { screen = AppScreen.Profile },
-                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid) },
+                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid, AppScreen.Favorite) },
                                 )
                             }
                             else -> HomeScreen(
