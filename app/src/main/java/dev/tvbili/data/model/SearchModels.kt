@@ -62,6 +62,20 @@ fun SearchVideoItem.toHomeCardVideo(): HomeCard.Video = HomeCard.Video(
 )
 
 /**
+ * 把搜索结果收敛成 LazyGrid 可安全使用的卡片列表。
+ *
+ * B 站综合搜索偶尔会混入缺 bvid 的推广/失效条目，也可能返回重复 bvid。若直接把
+ * `stableKey = "video_$bvid"` 交给 LazyGrid，空值或重复值会触发 duplicate key 异常，
+ * Compose 未捕获后表现为应用直接退回 TV Launcher。
+ */
+internal fun List<SearchVideoItem>.toUniqueHomeCardVideos(): List<HomeCard.Video> =
+    asSequence()
+        .filter { it.bvid.isNotBlank() }
+        .distinctBy { it.bvid }
+        .map { it.toHomeCardVideo() }
+        .toList()
+
+/**
  * 剥 `<em>` 高亮标签 + 4 个常见 HTML 实体反转义。移植自 BiliPai SearchModels:151-181。
  */
 internal fun cleanSearchHtml(raw: String): String =

@@ -1,6 +1,6 @@
 package dev.tvbili.data.repo
 
-import dev.tvbili.data.model.toHomeCardVideo
+import dev.tvbili.data.model.toUniqueHomeCardVideos
 import dev.tvbili.net.NetworkModule
 import dev.tvbili.net.WbiKeyManager
 import dev.tvbili.net.WbiUtils
@@ -35,6 +35,6 @@ class SearchRepository {
         resp.data?.result.orEmpty()
             .firstOrNull { it.resultType == "video" }
             ?.data.orEmpty()
-            .map { it.toHomeCardVideo() }
+            .toUniqueHomeCardVideos()
     }
 }

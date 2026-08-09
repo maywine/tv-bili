@@ -66,4 +66,20 @@ class SearchModelsTest {
             normalizeCoverUrl("https://i0.hdslb.com/x.jpg"),
         )
     }
+
+    // ── LazyGrid key safety ─────────────────────────────────────
+    @Test fun `toUniqueHomeCardVideos drops blank bvids and duplicate keys`() {
+        val items = listOf(
+            SearchVideoItem(id = 1, bvid = "", title = "推广占位"),
+            SearchVideoItem(id = 2, bvid = "BV1same", title = "第一条"),
+            SearchVideoItem(id = 3, bvid = "BV1same", title = "重复条目"),
+            SearchVideoItem(id = 4, bvid = "BV1other", title = "另一条"),
+        )
+
+        val cards = items.toUniqueHomeCardVideos()
+
+        assertEquals(listOf("BV1same", "BV1other"), cards.map { it.bvid })
+        assertEquals(listOf("video_BV1same", "video_BV1other"), cards.map { it.stableKey })
+        assertEquals("第一条", cards.first().title)
+    }
 }
