@@ -11,6 +11,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import dev.tvbili.data.model.PlayUrlData
 import dev.tvbili.data.model.RelatedVideoItem
 import dev.tvbili.data.model.VideoDetail
+import dev.tvbili.data.model.PgcPlayback
 import dev.tvbili.data.repo.HistoryRepository
 import dev.tvbili.data.repo.HomeCard
 import dev.tvbili.data.repo.VideoRepository
@@ -24,6 +25,8 @@ import dev.tvbili.player.resolvePlayerBufferPolicy
 import dev.tvbili.tv.TvUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -45,8 +48,8 @@ sealed interface VideoDetailState {
          */
         val danmakuXml: ByteArray?,
         /**
-         * 走了 PGC `try_look=1` fallback——当前流是试看片段（非大会员看的前 5-15 分钟）。
-         * UI 据此画「试看中」角标；过期 ENDED 触发自动续播相关视频时也基于此跳过历史进度。
+         * 电视接口明确标记的试看，或旧 PGC `try_look=1` 兜底流。
+         * UI 显示试看角标；不恢复正片历史进度，也不在结束后自动续播相关视频。
          */
         val isTrialPlay: Boolean = false,
     ) : VideoDetailState
@@ -93,6 +96,8 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     private var currentBvid: String = ""
+    private var currentPgc: PgcPlayback? = null
+    private var loadJob: Job? = null
     /** 多 P 视频里当前播放的分 P 索引（0-based）。 */
     private var currentPageIndex: Int = 0
     private var watchdogJob: Job? = null
@@ -117,6 +122,8 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState != Player.STATE_ENDED) return
             val ready = _state.value as? VideoDetailState.Ready ?: return
+            // 节目试看结束不跳转普通视频推荐，也不自动请求下一段试看。
+            if (ready.isTrialPlay || currentPgc != null) return
             val pages = ready.detail.pages
             // 多 P 未到末 P → 先放下一 P
             if (pages.size > 1 && currentPageIndex + 1 < pages.size) {
@@ -165,7 +172,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * 拉取 playurl，自动 UGC → PGC（try_look=1）fallback。
+     * 已知节目集数直接走电视播放；普通视频保留 UGC → PGC 的旧兜底流程。
      *
      * 流程：
      * 1. 先调 UGC `x/player/wbi/playurl`——支持普通投稿视频与多数公开 PGC bvid
@@ -180,6 +187,12 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         cid: Long,
         qn: Int,
     ): Pair<PlayUrlData, Boolean> {
+        val pgcTarget = currentPgc
+        if (pgcTarget != null) {
+            check(pgcTarget.detail.bvid == bvid && pgcTarget.detail.cid == cid) { "节目集数信息不匹配" }
+            val data = repo.loadTvPgcPlayUrl(pgcTarget, qn).getOrThrow()
+            return data to (data.isPreview == 1)
+        }
         val ugc = repo.loadPlayUrl(bvid, cid, qn)
         if (ugc.isSuccess) return ugc.getOrThrow() to false
         val ugcError = ugc.exceptionOrNull() ?: IllegalStateException("playurl failed")
@@ -213,7 +226,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                 loadPlayUrlOrTryLook(currentBvid, ready.detail.cid, _selectedQn.value)
             }.fold(
                 onSuccess = { (newPlayUrl, isTrial) ->
-                    setPlayerMedia(newPlayUrl, resumeMs = savedPos)
+                    if (!setPlayerMedia(newPlayUrl, resumeMs = savedPos)) return@launch
                     _state.value = ready.copy(playUrl = newPlayUrl, isTrialPlay = isTrial)
                     Log.d(TAG, "auto-recovered @ ${savedPos}ms (attempt $autoRecoverAttempts, trial=$isTrial)")
                 },
@@ -339,7 +352,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
             runCatching {
                 val (playUrl, isTrial) = loadPlayUrlOrTryLook(currentBvid, target.cid, _selectedQn.value)
                 val newDetail = ready.detail.copy(cid = target.cid, duration = target.duration)
-                setPlayerMedia(playUrl, resumeMs = 0L)
+                if (!setPlayerMedia(playUrl, resumeMs = 0L)) return@launch
                 _state.value = VideoDetailState.Ready(newDetail, playUrl, null, isTrial)
                 // 弹幕跟随分 P 重拉
                 launch {
@@ -372,13 +385,18 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun load(bvid: String) {
+    fun load(bvid: String, pgc: PgcPlayback? = null) {
         if (bvid.isBlank()) {
             _state.value = VideoDetailState.Error("bvid 为空")
             return
         }
-        if (currentBvid == bvid && _state.value is VideoDetailState.Ready) return
+        if (currentBvid == bvid && currentPgc == pgc && _state.value is VideoDetailState.Ready) {
+            if (pgc != null) player.playWhenReady = true
+            return
+        }
+        loadJob?.cancel()
         currentBvid = bvid
+        currentPgc = pgc
         currentPageIndex = 0
         autoRecoverAttempts = 0
         recoverJob?.cancel() // 取消上一个视频可能仍在飞行的恢复，避免它回写到新视频
@@ -387,14 +405,16 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         pendingAutoAdvanceOnRelatedReady = false
         _state.value = VideoDetailState.Loading(bvid)
         startWatchdog()
-        viewModelScope.launch {
+        loadJob = viewModelScope.launch {
             // 阶段 1：detail + playurl → 立刻起播。不再等弹幕 XML 下完才 setPlayerMedia，
             // 否则 PlayerSurface 进合成时机被弹幕下载阻塞，ExoPlayer 已经开始解码音频但
             // Surface 还没附上 → 首帧 onRenderedFirstFrame 错过，PlayerView shutter 不掉，
             // 表现为「黑屏 + 声音」直到下次重组（用户按 OK 触发）才恢复。
             runCatching {
-                val detail = repo.loadDetail(bvid).getOrThrow()
+                val detail = pgc?.detail ?: repo.loadDetail(bvid).getOrThrow()
+                ensureActive()
                 val (playUrl, isTrial) = loadPlayUrlOrTryLook(bvid, detail.cid, _selectedQn.value)
+                ensureActive()
                 Triple(detail, playUrl, isTrial)
             }.fold(
                 onSuccess = { (detail, playUrl, isTrial) ->
@@ -406,7 +426,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                         durationSec = detail.duration,
                     )
                     if (resumeMs > 0L) Log.d(TAG, "resume @ ${resumeMs}ms for $bvid")
-                    setPlayerMedia(playUrl, resumeMs = resumeMs)
+                    if (!setPlayerMedia(playUrl, resumeMs = resumeMs)) return@launch
                     _state.value = VideoDetailState.Ready(detail, playUrl, null, isTrial)
                     // 进入详情页 = 刷新元信息记录；旧 lastPositionMs 由 [HistoryRepository.recordView]
                     // 内部保留（避免秒退丢进度）。退出时 recordProgress 写覆盖最新位置。
@@ -421,6 +441,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                                     uploader = detail.owner.name,
                                     durationSec = detail.duration,
                                     viewCount = 0,
+                                    pgc = pgc,
                                 ),
                                 cid = detail.cid,
                             )
@@ -438,9 +459,10 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
                     }
                     // 阶段 3：相关视频列表预拉，供「末 P 看完后自动续播下一个视频」。
                     // 失败 / 空都不影响主播放——只是 ENDED 时不自动续播，等用户按返回。
-                    launch { prefetchRelated(bvid) }
+                    if (pgc == null) launch { prefetchRelated(bvid) }
                 },
                 onFailure = { e ->
+                    if (e is CancellationException) throw e
                     Log.e(TAG, "load($bvid) failed", e)
                     _state.value = VideoDetailState.Error(e.message ?: "加载失败")
                 },
@@ -452,7 +474,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         if (currentBvid.isBlank()) return
         val keep = currentBvid
         currentBvid = "" // 绕过 load 里 currentBvid==bvid 的早退
-        load(keep)
+        load(keep, currentPgc)
     }
 
     fun seekBy(deltaMs: Long) {
@@ -480,7 +502,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
             }.fold(
                 onSuccess = { (newPlayUrl, isTrial) ->
                     val savedPosition = player.currentPosition
-                    setPlayerMedia(newPlayUrl)
+                    if (!setPlayerMedia(newPlayUrl)) return@launch
                     player.seekTo(savedPosition)
                     _state.value = cur.copy(playUrl = newPlayUrl, isTrialPlay = isTrial)
                 },
@@ -517,17 +539,13 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
      * 且 timeline 为空，seekTo 行为不可靠，会导致 prepare 完成后 playWhenReady=true 不能
      * 自动起播，需要外力（按 OK）才能踢动。
      */
-    private fun setPlayerMedia(playUrl: PlayUrlData, resumeMs: Long = 0L) {
-        val selection = StreamSelector.select(playUrl, _selectedQn.value)
-        if (selection == null) {
+    private fun setPlayerMedia(playUrl: PlayUrlData, resumeMs: Long = 0L): Boolean {
+        val client = if (currentPgc != null) NetworkModule.tvMediaClient else NetworkModule.okHttpClient
+        val source = PlayerBuilder.buildMediaSource(client, playUrl, _selectedQn.value)
+        if (source == null) {
             _state.value = VideoDetailState.Error("无可播放流")
-            return
+            return false
         }
-        val source = PlayerBuilder.buildMediaSource(
-            okHttpClient = NetworkModule.okHttpClient,
-            videoUrl = selection.video.validUrl(),
-            audioUrl = selection.audio?.validUrl(),
-        )
         if (resumeMs > 0L) {
             player.setMediaSource(source, resumeMs)
         } else {
@@ -535,6 +553,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         }
         player.prepare()
         player.playWhenReady = true
+        return true
     }
 
     override fun onCleared() {

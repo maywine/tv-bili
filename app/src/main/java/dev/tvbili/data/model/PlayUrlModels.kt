@@ -10,7 +10,7 @@ import kotlinx.serialization.json.JsonNames
  *
  * - `accept_quality` + `accept_description` 提供清晰度 picker 数据源
  * - `dash.video[]` + `dash.audio[]` 是真正的播放流（MP4 segmented，可 ProgressiveMediaSource 拉）
- * - 不解析 `durl` / `dolby` / `flac`（YAGNI；只走 DASH）
+ * - 电视节目试看常返回 `durl` MP4；`is_preview` 决定是否展示试看状态
  */
 @Serializable
 data class PlayUrlResponse(
@@ -28,7 +28,22 @@ data class PlayUrlData(
     @SerialName("accept_description")
     val acceptDescription: List<String> = emptyList(),
     val dash: Dash? = null,
+    val durl: List<ProgressiveStream> = emptyList(),
+    val format: String = "",
+    @SerialName("is_preview") val isPreview: Int = 0,
+    @SerialName("is_drm") val isDrm: Boolean = false,
 )
+
+@Serializable
+data class ProgressiveStream(
+    val order: Int = 0,
+    val length: Long = 0,
+    val url: String = "",
+    @SerialName("backup_url") val backupUrl: List<String>? = null,
+) {
+    fun validUrl(): String = url.takeIf(String::isNotBlank)
+        ?: backupUrl?.firstOrNull(String::isNotBlank).orEmpty()
+}
 
 @Serializable
 data class Dash(

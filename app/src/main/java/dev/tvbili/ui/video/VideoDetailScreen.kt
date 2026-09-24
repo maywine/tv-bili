@@ -46,6 +46,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.util.UnstableApi
 import dev.tvbili.tv.KeepScreenOn
 import dev.tvbili.tv.tvFocusable
+import dev.tvbili.data.model.PgcPlayback
 import kotlinx.coroutines.delay
 
 @UnstableApi
@@ -54,6 +55,7 @@ fun VideoDetailScreen(
     bvid: String,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    pgc: PgcPlayback? = null,
     vm: VideoDetailViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -75,7 +77,7 @@ fun VideoDetailScreen(
     KeepScreenOn()
 
     // 启动加载
-    LaunchedEffect(bvid) { vm.load(bvid) }
+    LaunchedEffect(bvid, pgc) { vm.load(bvid, pgc) }
 
     // 进入屏幕后立刻把焦点抓到根 Box，确保 onPreviewKeyEvent 能收到事件。
     // Error 态除外——那时焦点要让给 ErrorBlock 的「重试 / 返回」按钮。
@@ -258,7 +260,7 @@ fun VideoDetailScreen(
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
-                // 试看中角标——右上角小红章，提示「这是非大会员的试看片段」；
+                // 按播放结果标记试看，不把目录上的会员标签当作当前账号的播放权限。
                 // 与浮层 / 进度条互不阻挡，始终可见
                 if (s.isTrialPlay) {
                     Text(

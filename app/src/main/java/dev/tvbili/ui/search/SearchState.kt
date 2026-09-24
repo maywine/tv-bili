@@ -6,7 +6,13 @@ import dev.tvbili.data.repo.HomeCard
 sealed interface SearchState {
     data object Idle : SearchState
     data class Loading(val keyword: String) : SearchState
-    data class Loaded(val keyword: String, val cards: List<HomeCard.Video>) : SearchState
+    data class Loaded(
+        val keyword: String,
+        val cards: List<HomeCard>,
+        val nextPage: Int? = null,
+        val appending: Boolean = false,
+        val appendError: String? = null,
+    ) : SearchState
     data class Empty(val keyword: String) : SearchState
     data class Error(val keyword: String, val message: String) : SearchState
 }

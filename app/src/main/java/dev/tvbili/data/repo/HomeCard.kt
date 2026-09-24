@@ -5,6 +5,7 @@ import dev.tvbili.data.model.LiveRoom
 import dev.tvbili.data.model.PopularItem
 import dev.tvbili.data.model.RankingItem
 import dev.tvbili.data.model.RecommendItem
+import dev.tvbili.data.model.PgcPlayback
 
 /**
  * 统一的首页卡片 ViewModel —— 屏蔽推荐/热门视频与直播间的字段差异。
@@ -29,6 +30,7 @@ sealed interface HomeCard {
         val uploader: String,
         val durationSec: Int,
         val viewCount: Long,
+        val pgc: PgcPlayback? = null,
     ) : HomeCard {
         override val stableKey: String get() = "video_$bvid"
     }

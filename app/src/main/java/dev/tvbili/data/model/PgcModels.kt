@@ -10,13 +10,12 @@ import kotlinx.serialization.json.JsonNames
  * `pgc/season/index/result?season_type={N}&page={p}&pagesize=20&order=2&...`
  *
  * season_type 取值：1=番剧 / 2=电影 / 3=纪录片 / 4=国创 / 5=电视剧 / 7=综艺
- * order：2=按热度（人气）/ 0=按更新时间 / 3=按追番人数
+ * order：2=按累计播放量 / 0=按更新时间 / 3=按追番人数
  *
  * 注意：返回的是 **季度（season）** 维度，不是单集——一部综艺 = 一个 season_id；
  * 点开后需要再请求 `pgc/view/web/season?season_id=...` 拿剧集列表里的 bvid 才能播。
  *
- * **响应根字段是 `result` 不是 `data`**——B 站 PGC 域的接口大多数用 `result`，与
- * UGC 域的 `data` 不一致。之前用 `data` 反序列化拿不到值导致首页综艺分区报错。
+ * 不同 PGC 端点的响应正文使用 `data` 或 `result`，索引响应兼容两种字段名。
  */
 @Serializable
 @OptIn(ExperimentalSerializationApi::class)
@@ -130,6 +129,8 @@ data class PgcEpisode(
     val aid: Long = 0,
     val bvid: String = "",
     val cid: Long = 0,
+    /** PGC 详情的时长单位是毫秒。 */
+    val duration: Long = 0,
     /** 标题，如「第 10 期 2026.05.16」。 */
     val title: String = "",
     /** 长标题，如「向往的生活 第10期」。 */

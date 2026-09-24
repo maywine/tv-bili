@@ -3,6 +3,11 @@ package dev.tvbili.data.repo
 import dev.tvbili.data.model.PlayUrlData
 import dev.tvbili.data.model.RelatedVideoItem
 import dev.tvbili.data.model.VideoDetail
+import dev.tvbili.data.model.PgcPlayback
+import dev.tvbili.data.store.TokenStore
+import dev.tvbili.net.AppSignUtils
+import dev.tvbili.net.tvPlaybackParams
+import kotlinx.coroutines.CancellationException
 import dev.tvbili.net.NetworkModule
 import dev.tvbili.net.WbiKeyManager
 import dev.tvbili.net.WbiUtils
@@ -19,6 +24,18 @@ import java.util.zip.Inflater
  * 错误约定：所有方法返回 [Result]；code != 0 / 网络异常 / data 为 null 都 failure。
  */
 class VideoRepository {
+
+    suspend fun loadTvPgcPlayUrl(pgc: PgcPlayback, qn: Int): Result<PlayUrlData> = runCatching {
+        val params = tvPlaybackParams(pgc, qn, TokenStore.accessToken, AppSignUtils.getTimestamp())
+        val response = NetworkModule.pgcApi.getTvPlayUrl(params)
+        require(response.code == 0) { "电视播放：${response.message} (${response.code})" }
+        val data = requireNotNull(response.data) { "电视接口未返回播放信息" }
+        check(!data.isDrm) { "该节目使用 DRM 加密，当前播放器暂不支持" }
+        check(data.dash?.video?.any { it.validUrl().isNotBlank() } == true || data.durl.any { it.validUrl().isNotBlank() }) {
+            "当前账号暂无可播放流，请确认节目播放权限"
+        }
+        data
+    }.onFailure { if (it is CancellationException) throw it }
 
     suspend fun loadDetail(bvid: String): Result<VideoDetail> = runCatching {
         val resp = NetworkModule.videoApi.getVideoDetail(bvid)

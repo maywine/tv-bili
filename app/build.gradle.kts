@@ -13,8 +13,8 @@ android {
         applicationId = "dev.tvbili"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "0.1.8"
+        versionCode = 12
+        versionName = "0.1.11"
 
         vectorDrawables { useSupportLibrary = true }
 
@@ -150,4 +150,6 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

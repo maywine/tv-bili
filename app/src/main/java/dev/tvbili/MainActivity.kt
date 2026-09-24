@@ -16,6 +16,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.media3.common.util.UnstableApi
 import dev.tvbili.data.store.TokenStore
+import dev.tvbili.data.repo.SearchScope
+import dev.tvbili.data.model.PgcPlayback
 import dev.tvbili.tv.LocalIsTvDevice
 import dev.tvbili.tv.TvUtils
 import dev.tvbili.ui.favorite.FavoriteScreen
@@ -32,7 +34,7 @@ import dev.tvbili.ui.video.VideoDetailScreen
 private sealed interface AppScreen {
     data object Home : AppScreen
     data object Settings : AppScreen
-    data object Search : AppScreen
+    data class Search(val scope: SearchScope) : AppScreen
     data object Profile : AppScreen
     data object History : AppScreen
     data object Favorite : AppScreen
@@ -40,7 +42,7 @@ private sealed interface AppScreen {
      * @param origin 返回时回到的来源页（无真正回退栈时由它记住「从哪进来的」）。
      *   从历史/收藏/搜索点进视频，按返回应回到对应列表页，而非一律回首页。默认 [Home]。
      */
-    data class Video(val bvid: String, val origin: AppScreen = Home) : AppScreen
+    data class Video(val bvid: String, val origin: AppScreen = Home, val pgc: PgcPlayback? = null) : AppScreen
     data class Live(val roomId: Long, val origin: AppScreen = Home) : AppScreen
 }
 
@@ -76,6 +78,7 @@ class MainActivity : ComponentActivity() {
                                 VideoDetailScreen(
                                     modifier = Modifier.padding(padding),
                                     bvid = (screen as AppScreen.Video).bvid,
+                                    pgc = (screen as AppScreen.Video).pgc,
                                     onBack = { screen = origin },
                                 )
                             }
@@ -89,10 +92,13 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             screen is AppScreen.Search -> {
+                                val searchScreen = screen as AppScreen.Search
                                 BackHandler { screen = AppScreen.Home }
                                 SearchScreen(
+                                    scope = searchScreen.scope,
                                     modifier = Modifier.padding(padding),
-                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid, AppScreen.Search) },
+                                    onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid, searchScreen) },
+                                    onNavigateToPgc = { screen = AppScreen.Video(it.detail.bvid, searchScreen, it) },
                                     onBack = { screen = AppScreen.Home },
                                 )
                             }
@@ -116,6 +122,7 @@ class MainActivity : ComponentActivity() {
                                     modifier = Modifier.padding(padding),
                                     onBack = { screen = AppScreen.Profile },
                                     onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid, AppScreen.History) },
+                                    onNavigateToPgc = { screen = AppScreen.Video(it.detail.bvid, AppScreen.History, it) },
                                 )
                             }
                             screen is AppScreen.Favorite -> {
@@ -130,8 +137,9 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.padding(padding),
                                 onNavigateToSettings = { screen = AppScreen.Settings },
                                 onNavigateToVideo = { bvid -> screen = AppScreen.Video(bvid) },
+                                onNavigateToPgc = { screen = AppScreen.Video(it.detail.bvid, pgc = it) },
                                 onNavigateToLive = { rid -> screen = AppScreen.Live(rid) },
-                                onNavigateToSearch = { screen = AppScreen.Search },
+                                onNavigateToSearch = { screen = AppScreen.Search(it) },
                                 onNavigateToProfile = { screen = AppScreen.Profile },
                             )
                         }

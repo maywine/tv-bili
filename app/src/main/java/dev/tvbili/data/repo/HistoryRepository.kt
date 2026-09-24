@@ -39,6 +39,7 @@ class HistoryRepository(private val context: Context) {
                 durationSec = card.durationSec,
                 lastPositionMs = preservedPos,
                 updatedAt = System.currentTimeMillis(),
+                pgc = card.pgc,
             ),
         )
     }

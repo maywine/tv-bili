@@ -4,6 +4,8 @@ import dev.tvbili.data.model.PgcIndexResponse
 import dev.tvbili.data.model.PgcPlayUrlResponse
 import dev.tvbili.data.model.PgcRankResponse
 import dev.tvbili.data.model.PgcSeasonDetailResponse
+import dev.tvbili.data.model.TvPgcIndexResponse
+import dev.tvbili.data.model.PlayUrlResponse
 import retrofit2.http.GET
 import retrofit2.http.Query
 import retrofit2.http.QueryMap
@@ -11,15 +13,27 @@ import retrofit2.http.QueryMap
 /**
  * PGC（番剧 / 电影 / 综艺 / 国创 / 电视剧 / 纪录片）接口。
  *
- * - [getSeasonIndex]：按 season_type 拉某类 PGC 的季度排行；用于首页 VARIETY 等分区列表
+ * - [getTvSeasonIndex]：电影、综艺的电视片库
+ * - [getSeasonIndex]：网页版索引，电视片库失败时兜底
  * - [getSeasonDetail]：拉单个 season 的剧集 bvid 列表；点 PgcSeason 卡时解析最新一集 bvid
  */
 interface PgcApi {
 
+    @GET("x/tv/playurl")
+    suspend fun getTvPlayUrl(@QueryMap signed: Map<String, String>): PlayUrlResponse
+
+    @GET("x/tv/index/v2/pgc")
+    suspend fun getTvSeasonIndex(
+        @Query("category") seasonType: Int,
+        @Query("pn") page: Int = 1,
+        @Query("ps") pageSize: Int = 20,
+        @Query("sort") sort: Int = 8,
+    ): TvPgcIndexResponse
+
     /**
      * 参数集对齐 B 站 web 端实际请求——`pagesize` 而非 `page_size`，且需要 `st`、
      * `sort`、`season_status`、`type` 等参数齐全，否则可能返回空 list / 接口报错。
-     * 默认值都是 -1 / 0 表示「不筛选」，等价于「全部综艺按热度」。
+     * 默认值都是 -1 / 0 表示「不筛选」，等价于「全部综艺按累计播放量」。
      */
     @GET("pgc/season/index/result")
     suspend fun getSeasonIndex(
@@ -28,7 +42,7 @@ interface PgcApi {
         @Query("st") st: Int = seasonType,
         @Query("page") page: Int = 1,
         @Query("pagesize") pageSize: Int = 20,
-        /** 2=按热度（默认）/ 0=按更新时间 / 3=按追番人数。 */
+        /** 2=按累计播放量（默认）/ 0=按更新时间 / 3=按追番人数。 */
         @Query("order") order: Int = 2,
         /** 0=desc 1=asc。 */
         @Query("sort") sort: Int = 0,

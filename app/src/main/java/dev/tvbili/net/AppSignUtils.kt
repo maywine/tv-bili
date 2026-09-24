@@ -1,6 +1,7 @@
 package dev.tvbili.net
 
 import java.security.MessageDigest
+import java.net.URLEncoder
 
 /**
  * APP 签名工具。
@@ -24,6 +25,14 @@ object AppSignUtils {
 
     fun signForTvLogin(params: Map<String, String>): Map<String, String> =
         sign(params, TV_APP_SEC)
+
+    fun signForTvApi(params: Map<String, String>): Map<String, String> {
+        val sorted = params.toSortedMap()
+        val query = sorted.entries.joinToString("&") {
+            "${URLEncoder.encode(it.key, "UTF-8")}=${URLEncoder.encode(it.value, "UTF-8")}"
+        }
+        return sorted + ("sign" to md5(query + TV_APP_SEC))
+    }
 
     fun signForAndroidApi(params: Map<String, String>): Map<String, String> =
         sign(params, ANDROID_APP_SEC)

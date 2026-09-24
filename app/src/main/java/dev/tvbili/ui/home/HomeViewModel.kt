@@ -8,6 +8,9 @@ import dev.tvbili.data.repo.HistoryRepository
 import dev.tvbili.data.repo.HomeCard
 import dev.tvbili.data.repo.HomeRepository
 import dev.tvbili.data.repo.PgcRepository
+import dev.tvbili.data.repo.PgcOrder
+import dev.tvbili.data.repo.PgcPage
+import dev.tvbili.data.model.PgcPlayback
 import dev.tvbili.data.store.SectionConfigStore
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -76,6 +79,16 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * 各 PGC 分区独立计数——CINEMA 翻到第 3 页时切到 VARIETY 不影响后者从 1 开始。
      */
     private val pgcPageMap = ConcurrentHashMap<SectionId, Int>()
+    private val pgcPages = ConcurrentHashMap<SectionId, PgcPage>()
+    private val pgcLoadJobs = mutableMapOf<SectionId, kotlinx.coroutines.Job>()
+    private val _pgcOrders = MutableStateFlow<Map<SectionId, PgcOrder>>(emptyMap())
+    val pgcOrders: StateFlow<Map<SectionId, PgcOrder>> = _pgcOrders.asStateFlow()
+
+    fun selectPgcOrder(section: SectionId, order: PgcOrder) {
+        if (section.kind != SectionId.Kind.PGC || (_pgcOrders.value[section] ?: PgcOrder.RECOMMENDED) == order) return
+        _pgcOrders.value += section to order
+        load(section)
+    }
 
     init {
         load(_selectedSection.value)
@@ -141,7 +154,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * 分页追加：滚到 grid 末尾时由 ContentPane 触发。
      * 支持的分区：
      * - RECOMMEND：用 rcmdFreshIdx 顺序拉推荐流
-     * - PGC：用 pgcPageMap 拉 pgc/season/index/result 下一页
+     * - PGC：按首屏选定的数据源、排序和页码继续加载，到末页停止
      * 其它分区 no-op（B 站 ranking/popular 不暴露稳定的分页接口，硬分页易拿重复）。
      *
      * 共通行为：
@@ -174,14 +187,21 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         val flow = stateFor(section)
         val cur = flow.value as? SectionState.Loaded ?: return
         if (cur.appending) return
-        // 空列表说明 index/result 不可用、当前在 rank 兜底页——rank 不分页，跳过
-        if (cur.cards.isEmpty()) return
-        flow.value = cur.copy(appending = true)
+        val previousPage = pgcPages[section] ?: return
+        if (!previousPage.hasMore) return
+        val loading = cur.copy(appending = true)
+        flow.value = loading
+        val order = _pgcOrders.value[section] ?: PgcOrder.RECOMMENDED
         viewModelScope.launch {
             val nextPage = (pgcPageMap[section] ?: 1) + 1
-            val result = pgcRepo.loadSeasonIndex(seasonType = section.rid, page = nextPage)
-            val appended = appendResult(flow, result, tag = "loadMorePgc[page=$nextPage]")
-            if (appended) pgcPageMap[section] = nextPage
+            val result = pgcRepo.loadSeasonIndex(section.rid, nextPage, order, previousPage.source)
+            // 切换排序/刷新后丢弃旧页；其他分区仍可在后台完成各自加载。
+            if (flow.value !== loading) return@launch
+            result.onSuccess {
+                pgcPageMap[section] = nextPage
+                pgcPages[section] = it
+            }
+            appendResult(flow, result.map { it.cards }, tag = "loadMorePgc[page=$nextPage]")
         }
     }
 
@@ -220,35 +240,35 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     fun consumePendingGridFocus() { _pendingGridFocus.value = false }
 
     /**
-     * PGC season → bvid 解析中标志位；UI 用它画 loading 蒙层避免用户连点。
+     * PGC season → 集数播放信息解析中标志位；UI 用它画 loading 蒙层避免用户连点。
      * stableKey = HomeCard.stableKey 形态（"pgc_${seasonId}"），仅一条进行中。
      */
     private val _resolvingPgcKey = MutableStateFlow<String?>(null)
     val resolvingPgcKey: StateFlow<String?> = _resolvingPgcKey.asStateFlow()
 
     /**
-     * PGC 卡解析完发射的 bvid 事件。MainActivity 收到后 `screen = AppScreen.Video(bvid)`。
+     * PGC 卡解析完携带 season / ep / cid 等完整信息导航，避免重新请求普通视频详情。
      * 用 SharedFlow（replay=0）避免重组重复消费；extraBufferCapacity=1 防止快速点击丢事件。
      */
-    private val _pgcNavigateEvent = MutableSharedFlow<String>(
+    private val _pgcNavigateEvent = MutableSharedFlow<PgcPlayback>(
         replay = 0,
         extraBufferCapacity = 1,
     )
-    val pgcNavigateEvent: SharedFlow<String> = _pgcNavigateEvent.asSharedFlow()
+    val pgcNavigateEvent: SharedFlow<PgcPlayback> = _pgcNavigateEvent.asSharedFlow()
 
     /**
-     * 点击 PGC 季度卡：拉 season 详情 → 取最新一集 bvid → 发 navigate 事件。
+     * 点击 PGC 季度卡：拉 season 详情 → 取最新一集播放信息 → 发 navigate 事件。
      * 失败时仅记日志（UI 自动消除 loading），不阻断用户重试。
      */
     fun openPgcSeason(card: HomeCard.PgcSeason) {
         if (_resolvingPgcKey.value == card.stableKey) return // 防连点
         _resolvingPgcKey.value = card.stableKey
         viewModelScope.launch {
-            pgcRepo.resolveLatestEpisodeBvid(card.seasonId).fold(
-                onSuccess = { bvid ->
+            pgcRepo.resolveLatestEpisode(card.seasonId).fold(
+                onSuccess = { playback ->
                     lastFocusedKey[_selectedSection.value] = card.stableKey
                     _pendingGridFocus.value = true
-                    _pgcNavigateEvent.tryEmit(bvid)
+                    _pgcNavigateEvent.tryEmit(playback)
                 },
                 onFailure = { e ->
                     Log.w(TAG, "resolvePgcSeason(${card.seasonId}) failed: ${e.message}")
@@ -279,7 +299,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         flow.value = SectionState.Loading
-        if (section.kind == SectionId.Kind.PGC) pgcPageMap[section] = 1
+        if (section.kind == SectionId.Kind.PGC) {
+            loadPgc(section, flow)
+            return
+        }
         viewModelScope.launch {
             val result = when (section.kind) {
                 SectionId.Kind.RECOMMEND ->
@@ -291,9 +314,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     page = 1,
                 )
                 SectionId.Kind.RANKING -> repo.loadRanking(rid = section.rid)
-                SectionId.Kind.PGC ->
-                    // PGC 分区把 rid 字段重用为 season_type
-                    pgcRepo.loadSeasonIndex(seasonType = section.rid, page = 1)
+                SectionId.Kind.PGC -> return@launch
                 SectionId.Kind.HISTORY -> runCatching { historyRepo.getRecent() }
                 SectionId.Kind.PLACEHOLDER -> return@launch // 上面已 return
             }
@@ -303,6 +324,23 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     Log.e(TAG, "load($section) failed", e)
                     SectionState.Error(e.message ?: "未知错误")
                 },
+            )
+        }
+    }
+
+    private fun loadPgc(section: SectionId, flow: MutableStateFlow<SectionState>) {
+        pgcLoadJobs.remove(section)?.cancel()
+        pgcPageMap[section] = 1
+        pgcPages.remove(section)
+        val order = _pgcOrders.value[section] ?: PgcOrder.RECOMMENDED
+        pgcLoadJobs[section] = viewModelScope.launch {
+            pgcRepo.loadSeasonIndex(section.rid, order = order).fold(
+                onSuccess = {
+                    pgcPages[section] = it
+                    flow.value = if (it.cards.isEmpty()) SectionState.Empty("暂无${section.label}")
+                    else SectionState.Loaded(it.cards)
+                },
+                onFailure = { flow.value = SectionState.Error(it.message ?: "片库加载失败") },
             )
         }
     }

@@ -20,6 +20,13 @@ import dev.tvbili.data.model.PlayUrlData
  */
 object StreamSelector {
 
+    /** 分段 MP4 必须完整保留；任一片段缺地址都不能静默跳过。 */
+    fun progressiveUrls(data: PlayUrlData): List<String> {
+        if (data.isDrm || data.durl.isEmpty()) return emptyList()
+        val urls = data.durl.sortedBy { it.order }.map { it.validUrl() }
+        return urls.takeIf { it.all(String::isNotBlank) }.orEmpty()
+    }
+
     data class Selection(
         val video: DashStream,
         val audio: DashStream?,

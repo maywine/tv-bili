@@ -52,6 +52,12 @@ object NetworkModule {
             .build()
     }
 
+    val tvMediaClient: OkHttpClient by lazy {
+        okHttpClient.newBuilder()
+            .addInterceptor(TvMediaHeadersInterceptor())
+            .build()
+    }
+
     val mainApi: MainApi by lazy {
         Retrofit.Builder()
             .baseUrl("https://api.bilibili.com/")

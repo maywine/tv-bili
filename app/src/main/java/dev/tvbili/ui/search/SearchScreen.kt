@@ -5,10 +5,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -18,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -37,6 +40,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.tvbili.ui.home.components.VideoCard
+import dev.tvbili.ui.home.components.PgcSeasonCard
+import dev.tvbili.data.repo.HomeCard
+import dev.tvbili.data.repo.SearchScope
+import dev.tvbili.data.model.PgcPlayback
+import dev.tvbili.tv.tvFocusable
 
 /**
  * 搜索屏：顶部 OutlinedTextField + IME → 下方结果网格。
@@ -50,25 +58,32 @@ import dev.tvbili.ui.home.components.VideoCard
  */
 @Composable
 fun SearchScreen(
+    scope: SearchScope,
     onNavigateToVideo: (String) -> Unit,
+    onNavigateToPgc: (PgcPlayback) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    vm: SearchViewModel = viewModel(),
+    vm: SearchViewModel = viewModel(key = "search_${scope.name}") { SearchViewModel(scope) },
 ) {
     val query by vm.query.collectAsStateWithLifecycle()
     val state by vm.state.collectAsStateWithLifecycle()
+    val resolvingKey by vm.resolvingKey.collectAsStateWithLifecycle()
+    val openError by vm.openError.collectAsStateWithLifecycle()
     val inputFocus = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
 
     // 拼音输入期间 selection / composition 都属于 IME 会话状态，不能只把 String 绕一圈
     // StateFlow 再灌回来；那会丢 composing range，并可能让老 TV IME 的 InputConnection 失步。
     // TextFieldValue 留在 UI 层同步更新，只有候选词提交后才通知 ViewModel 发搜索请求。
-    var inputValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+    var inputValue by rememberSaveable(scope, stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(query))
     }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(scope) {
         runCatching { inputFocus.requestFocus() }
+    }
+    LaunchedEffect(vm) {
+        vm.navigateEvent.collect { onNavigateToPgc(it) }
     }
     BackHandler { onBack() }
 
@@ -79,6 +94,10 @@ fun SearchScreen(
             .padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            TextButton(onClick = onBack, modifier = Modifier.tvFocusable()) { Text("返回") }
+            Text("搜索${scope.label}", color = Color.White, style = MaterialTheme.typography.titleLarge)
+        }
         OutlinedTextField(
             value = inputValue,
             onValueChange = { next ->
@@ -90,7 +109,7 @@ fun SearchScreen(
                 .fillMaxWidth()
                 .focusRequester(inputFocus),
             singleLine = true,
-            placeholder = { Text("搜视频…", color = Color(0xFF707070)) },
+            placeholder = { Text("输入${scope.label}名称…", color = Color(0xFF707070)) },
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             keyboardActions = KeyboardActions(
                 onSearch = {
@@ -109,11 +128,12 @@ fun SearchScreen(
                 cursorColor = MaterialTheme.colorScheme.primary,
             ),
         )
+        openError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
         Box(modifier = Modifier.fillMaxSize()) {
             when (val s = state) {
                 SearchState.Idle -> Text(
-                    text = "敲字搜视频",
+                    text = "输入关键词，搜索${scope.label}",
                     color = Color(0xFF707070),
                     modifier = Modifier.align(Alignment.Center),
                 )
@@ -124,7 +144,7 @@ fun SearchScreen(
                 )
 
                 is SearchState.Empty -> Text(
-                    text = "没找到「${s.keyword}」",
+                    text = "没有找到与「${s.keyword}」相关的${scope.label}",
                     color = Color(0xFFB0B0B0),
                     modifier = Modifier.align(Alignment.Center),
                 )
@@ -142,7 +162,26 @@ fun SearchScreen(
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     items(items = s.cards, key = { it.stableKey }) { card ->
-                        VideoCard(card = card, onClick = { onNavigateToVideo(card.bvid) })
+                        when (card) {
+                            is HomeCard.Video -> VideoCard(card = card, onClick = { onNavigateToVideo(card.bvid) })
+                            is HomeCard.PgcSeason -> PgcSeasonCard(
+                                card = card,
+                                onClick = { vm.openSeason(card) },
+                                resolving = resolvingKey == card.stableKey,
+                            )
+                            is HomeCard.Live -> Unit
+                        }
+                    }
+                    if (s.nextPage != null) {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                                s.appendError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                                if (s.appending) CircularProgressIndicator()
+                                else TextButton(onClick = vm::loadMore, modifier = Modifier.tvFocusable()) {
+                                    Text(if (s.appendError == null) "加载更多${scope.label}" else "重试")
+                                }
+                            }
+                        }
                     }
                 }
             }

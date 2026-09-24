@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.tvbili.data.repo.HistoryRepository
 import dev.tvbili.data.repo.HomeCard
+import dev.tvbili.data.model.PgcPlayback
 import dev.tvbili.ui.home.components.VideoCard
 
 /**
@@ -40,6 +41,7 @@ import dev.tvbili.ui.home.components.VideoCard
 fun HistoryScreen(
     onBack: () -> Unit,
     onNavigateToVideo: (String) -> Unit,
+    onNavigateToPgc: (PgcPlayback) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -83,9 +85,11 @@ fun HistoryScreen(
                     when (card) {
                         is HomeCard.Video -> VideoCard(
                             card = card,
-                            onClick = { onNavigateToVideo(card.bvid) },
+                            onClick = {
+                                if (card.pgc != null) onNavigateToPgc(card.pgc) else onNavigateToVideo(card.bvid)
+                            },
                         )
-                        // 历史记录只可能是 UGC 视频；其余变体仅为穷尽 when，运行时不会命中
+                        // 历史中的节目也以单集视频卡呈现。
                         is HomeCard.Live, is HomeCard.PgcSeason -> Unit
                     }
                 }

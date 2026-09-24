@@ -1,6 +1,7 @@
 package dev.tvbili.player
 
 import android.content.Context
+import android.os.Build
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -15,6 +16,9 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.ConcatenatingMediaSource
+import dev.tvbili.data.model.PlayUrlData
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import okhttp3.OkHttpClient
 
 /**
@@ -23,8 +27,8 @@ import okhttp3.OkHttpClient
  * 设计要点：
  * - **OkHttpDataSource 复用项目 [okHttpClient]**：cookies / UA / Referer 拦截器自动生效
  *   （不像 BiliPai 单独拉一个 `playbackOkHttpClient`）
- * - **Referer 显式注入**：B 站 CDN 校验 Referer，必须 `https://www.bilibili.com`
- *   —— OkHttpDataSource 的 defaultRequestProperties 优先级**高于** OkHttp 拦截器对该 host 的 header 重写
+ * - 普通视频沿用网页请求头；电视节目的 tvMediaClient 会在拦截器中改用电视 UA，
+ *   并移除 Origin / Referer，否则电视 CDN 返回 403。
  * - **MergingMediaSource(video, audio)**：B 站 DASH 是视频/音频两条独立 stream URL，
  *   ProgressiveMediaSource 可分别拉 segmented MP4，MergingMediaSource 合并播放
  * - **DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF**：盒子端不引 ffmpeg 扩展，硬解优先
@@ -32,6 +36,25 @@ import okhttp3.OkHttpClient
  */
 @UnstableApi
 object PlayerBuilder {
+
+    fun buildMediaSource(okHttpClient: OkHttpClient, data: PlayUrlData, targetQn: Int): MediaSource? {
+        if (data.isDrm) return null
+        val selection = StreamSelector.select(data, targetQn)
+        if (selection != null && selection.video.validUrl().isNotBlank()) {
+            return buildMediaSource(okHttpClient, selection.video.validUrl(), selection.audio?.validUrl())
+        }
+        val urls = StreamSelector.progressiveUrls(data)
+        if (urls.isEmpty()) return null
+        val factory = ProgressiveMediaSource.Factory(
+            OkHttpDataSource.Factory(okHttpClient).setDefaultRequestProperties(PLAYBACK_HEADERS),
+        )
+        val sources = urls.map { url ->
+            val item = MediaItem.Builder().setUri(url)
+            if (data.format.contains("mp4", ignoreCase = true)) item.setMimeType(MimeTypes.VIDEO_MP4)
+            factory.createMediaSource(item.build())
+        }
+        return if (sources.size == 1) sources.single() else ConcatenatingMediaSource(*sources.toTypedArray())
+    }
 
     private val PLAYBACK_HEADERS = mapOf(
         "Referer" to "https://www.bilibili.com",
@@ -59,6 +82,17 @@ object PlayerBuilder {
             .build()
 
         val renderers = DefaultRenderersFactory(context)
+            .setMediaCodecSelector { mimeType, secure, tunneling ->
+                val codecs = MediaCodecSelector.DEFAULT.getDecoderInfos(mimeType, secure, tunneling)
+                // BlueStacks 在 x86 上注册的虚拟 Qualcomm AVC 解码器可能无异常地停止出帧。
+                // 仅为这类环境优先使用系统自带的 FFmpeg AVC，ARM 盒子保留原有硬解顺序。
+                if (mimeType == MimeTypes.VIDEO_H264 &&
+                    Build.SUPPORTED_ABIS.any { it.startsWith("x86") } &&
+                    codecs.firstOrNull()?.name == "OMX.qcom.video.decoder.avc"
+                ) {
+                    codecs.sortedBy { if (it.name == "OMX.ffmpeg.h264.decoder") 0 else 1 }
+                } else codecs
+            }
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
             .setEnableDecoderFallback(true)
 

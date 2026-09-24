@@ -9,14 +9,19 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.tvbili.data.repo.HomeCard
+import dev.tvbili.data.repo.PgcOrder
+import dev.tvbili.data.repo.SearchScope
+import dev.tvbili.data.model.PgcPlayback
 import dev.tvbili.ui.home.components.LiveAreaChipRow
+import dev.tvbili.ui.home.components.PgcCatalogHeader
 
 @Composable
 fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToVideo: (String) -> Unit,
+    onNavigateToPgc: (PgcPlayback) -> Unit,
     onNavigateToLive: (Long) -> Unit,
-    onNavigateToSearch: () -> Unit,
+    onNavigateToSearch: (SearchScope) -> Unit,
     onNavigateToProfile: () -> Unit,
     modifier: Modifier = Modifier,
     vm: HomeViewModel = viewModel(),
@@ -28,10 +33,11 @@ fun HomeScreen(
     val resolvingPgcKey by vm.resolvingPgcKey.collectAsStateWithLifecycle()
     val selectedLiveParentId by vm.selectedLiveParentId.collectAsStateWithLifecycle()
     val selectedLiveAreaId by vm.selectedLiveAreaId.collectAsStateWithLifecycle()
+    val pgcOrders by vm.pgcOrders.collectAsStateWithLifecycle()
 
-    // 点 PGC 综艺卡 → VM 异步解析 season → 发 bvid 事件 → 这里转 nav
+    // 节目卡由 VM 解析集数信息后导航，保留电视播放所需的 ep_id
     LaunchedEffect(Unit) {
-        vm.pgcNavigateEvent.collect { bvid -> onNavigateToVideo(bvid) }
+        vm.pgcNavigateEvent.collect { onNavigateToPgc(it) }
     }
 
     Row(modifier = modifier.fillMaxSize()) {
@@ -40,7 +46,7 @@ fun HomeScreen(
             selected = selected,
             onSelect = vm::selectSection,
             onAvatarClick = onNavigateToProfile,
-            onSearchClick = onNavigateToSearch,
+            onSearchClick = { onNavigateToSearch(SearchScope.VIDEO) },
             onSettingsClick = onNavigateToSettings,
             suppressAutoFocus = pendingGridFocus,
         )
@@ -51,7 +57,7 @@ fun HomeScreen(
                 when (card) {
                     is HomeCard.Video -> {
                         vm.markCardClicked(card)
-                        onNavigateToVideo(card.bvid)
+                        if (card.pgc != null) onNavigateToPgc(card.pgc) else onNavigateToVideo(card.bvid)
                     }
                     is HomeCard.Live -> {
                         vm.markCardClicked(card)
@@ -72,6 +78,17 @@ fun HomeScreen(
                         selectedParentId = selectedLiveParentId,
                         selectedAreaId = selectedLiveAreaId,
                         onSelect = vm::selectLiveArea,
+                    )
+                }
+            } else if (selected == SectionId.CINEMA || selected == SectionId.VARIETY) {
+                {
+                    PgcCatalogHeader(
+                        label = selected.label,
+                        order = pgcOrders[selected] ?: PgcOrder.RECOMMENDED,
+                        onOrder = { vm.selectPgcOrder(selected, it) },
+                        onSearch = {
+                            onNavigateToSearch(if (selected == SectionId.CINEMA) SearchScope.CINEMA else SearchScope.VARIETY)
+                        },
                     )
                 }
             } else {

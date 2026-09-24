@@ -2,51 +2,65 @@ package dev.tvbili.data.repo
 
 import android.util.Log
 import dev.tvbili.data.model.toHomeCard
+import dev.tvbili.data.model.toPgcCards
+import dev.tvbili.data.model.PgcPlayback
+import dev.tvbili.data.model.latestPlayback
 import dev.tvbili.net.NetworkModule
+import kotlinx.coroutines.CancellationException
 
-/**
- * PGC 内容（综艺 / 番剧 / 电影 / 国创 等）拉取。
- *
- * - [loadSeasonIndex]：按 season_type 拉 season 列表，转 [HomeCard.PgcSeason]
- *   优先走 `pgc/web/rank/list`（热门榜，结构稳）；为空时降级到 `pgc/season/index/result`
- * - [resolveLatestEpisodeBvid]：根据 season_id 取剧集列表，返回最新一集的 bvid——
- *   用于「点综艺卡 → 跳到最新一集」流程
- *
- * season_type：1=番剧 / 2=电影 / 3=纪录片 / 4=国创 / 5=电视剧 / 7=综艺
- */
+/** 电影、综艺优先使用电视片库；网页版索引和排行榜只在首屏失败时兜底。 */
 class PgcRepository {
 
-    /**
-     * 拉 PGC 季度列表。
-     *
-     * - **首选** `pgc/season/index/result`——支持分页 + 按热度排序（order=2），与 B 站 web
-     *   端电影/综艺频道页同款。每页 20 条，page 递增可继续往下拉。
-     * - **仅 page=1 兜底** rank 系列两个端点——服务端偶发空响应 / 索引端点维护时用
-     *   3 日热门榜补一条命。第 2 页起 rank 不分页，直接放弃兜底。
-     *
-     * 每步失败/为空都打 Log.w("PgcRepository", ...)，方便用 `adb logcat -s PgcRepository`
-     * 抓到具体哪步返回了什么（code / message / size）。
-     */
-    suspend fun loadSeasonIndex(seasonType: Int, page: Int = 1): Result<List<HomeCard.PgcSeason>> = runCatching {
-        val tryIndex = tryFetch("index/result[page=$page]") {
-            val r = NetworkModule.pgcApi.getSeasonIndex(seasonType = seasonType, page = page)
-            r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
-        }
-        if (tryIndex.isNotEmpty() || page > 1) return@runCatching tryIndex
+    suspend fun resolveLatestEpisode(seasonId: Long): Result<PgcPlayback> = runCatching {
+        val response = NetworkModule.pgcApi.getSeasonDetail(seasonId)
+        require(response.code == 0) { "节目详情：${response.message} (${response.code})" }
+        val season = requireNotNull(response.result) { "节目详情为空" }
+        season.copy(seasonId = seasonId).latestPlayback()
+    }.onFailure { if (it is CancellationException) throw it }
 
-        val tryRank = tryFetch("rank/web") {
-            val r = NetworkModule.pgcApi.getRank(seasonType = seasonType, day = 3)
-            r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
+    /** 固定后续页的数据源，避免电视片库和网页版排序不同导致漏项或重复。 */
+    suspend fun loadSeasonIndex(
+        seasonType: Int,
+        page: Int = 1,
+        order: PgcOrder = PgcOrder.RECOMMENDED,
+        source: PgcSource? = null,
+    ): Result<PgcPage> = runCatching {
+        if (source == PgcSource.RANK) return@runCatching PgcPage(emptyList(), false, source)
+        if (source == null || source == PgcSource.TV) {
+            try {
+                val response = NetworkModule.pgcApi.getTvSeasonIndex(seasonType, page, sort = order.tvSort)
+                require(response.code == 0) { "电视片库：${response.message} (${response.code})" }
+                val data = requireNotNull(response.data) { "电视片库未返回内容" }
+                return@runCatching PgcPage(data.result.toPgcCards(seasonType), data.hasNext(page), PgcSource.TV)
+            } catch (e: Exception) {
+                if (e is CancellationException || source == PgcSource.TV) throw e
+                Log.w(TAG, "TV catalog unavailable; trying web index", e)
+            }
         }
-        if (tryRank.isNotEmpty()) return@runCatching tryRank
-
-        tryFetch("rank/legacy") {
-            val r = NetworkModule.pgcApi.getLegacyRank(seasonType = seasonType, day = 3)
-            r.code to (r.result?.list.orEmpty().mapNotNull { it.takeIf { it.seasonId > 0 && it.title.isNotBlank() }?.toHomeCard() })
+        try {
+            val response = NetworkModule.pgcApi.getSeasonIndex(seasonType = seasonType, page = page, order = order.webOrder)
+            require(response.code == 0) { "片库加载失败：${response.message} (${response.code})" }
+            val data = requireNotNull(response.result) { "片库未返回内容" }
+            val cards = data.list.filter { it.seasonId > 0 && it.title.isNotBlank() }
+                .distinctBy { it.seasonId }.map { it.toHomeCard() }
+            PgcPage(cards, data.hasNext == 1, PgcSource.WEB)
+        } catch (e: Exception) {
+            if (e is CancellationException || source == PgcSource.WEB || page > 1) throw e
+            val rank = tryFetch("rank/web") {
+                val r = NetworkModule.pgcApi.getRank(seasonType = seasonType, day = 3)
+                r.code to r.result?.list.orEmpty().filter { it.seasonId > 0 && it.title.isNotBlank() }.map { it.toHomeCard() }
+            }.ifEmpty {
+                tryFetch("rank/legacy") {
+                    val r = NetworkModule.pgcApi.getLegacyRank(seasonType = seasonType, day = 3)
+                    r.code to r.result?.list.orEmpty().filter { it.seasonId > 0 && it.title.isNotBlank() }.map { it.toHomeCard() }
+                }
+            }
+            if (rank.isEmpty()) throw e
+            PgcPage(rank.distinctBy { it.seasonId }, false, PgcSource.RANK)
         }
-    }
+    }.onFailure { if (it is CancellationException) throw it }
 
-    /** 调一个 PGC 端点，记录 code/数量；任何异常都吞掉返回空列表（由调用方继续尝试下一步）。 */
+    /** 排行端点失败时尝试下一个兜底；协程取消必须向上传递。 */
     private inline fun tryFetch(
         tag: String,
         block: () -> Pair<Int, List<HomeCard.PgcSeason>>,
@@ -59,6 +73,7 @@ class PgcRepository {
             } else cards
         },
         onFailure = { e ->
+            if (e is CancellationException) throw e
             Log.w(TAG, "pgc[$tag] threw: ${e.message}")
             emptyList()
         },

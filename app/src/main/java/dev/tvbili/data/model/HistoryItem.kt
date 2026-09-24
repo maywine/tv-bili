@@ -24,6 +24,7 @@ data class HistoryItem(
     /** 0 = 仅打开过未播放，或不可恢复的早返调用 */
     val lastPositionMs: Long = 0,
     val updatedAt: Long = System.currentTimeMillis(),
+    val pgc: PgcPlayback? = null,
 ) {
     fun toHomeCard(): HomeCard.Video = HomeCard.Video(
         aid = aid,
@@ -33,5 +34,6 @@ data class HistoryItem(
         uploader = uploader,
         durationSec = durationSec,
         viewCount = 0, // 历史卡片不展示播放量
+        pgc = pgc,
     )
 }
