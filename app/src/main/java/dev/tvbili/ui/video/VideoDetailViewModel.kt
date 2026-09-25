@@ -48,7 +48,7 @@ sealed interface VideoDetailState {
          */
         val danmakuXml: ByteArray?,
         /**
-         * 电视接口明确标记的试看，或旧 PGC `try_look=1` 兜底流。
+         * 手机接口明确标记的试看，或旧 PGC `try_look=1` 兜底流。
          * UI 显示试看角标；不恢复正片历史进度，也不在结束后自动续播相关视频。
          */
         val isTrialPlay: Boolean = false,
@@ -172,7 +172,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     /**
-     * 已知节目集数直接走电视播放；普通视频保留 UGC → PGC 的旧兜底流程。
+     * 已知节目集数直接走手机播放；普通视频保留 UGC → PGC 的旧兜底流程。
      *
      * 流程：
      * 1. 先调 UGC `x/player/wbi/playurl`——支持普通投稿视频与多数公开 PGC bvid
@@ -190,7 +190,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
         val pgcTarget = currentPgc
         if (pgcTarget != null) {
             check(pgcTarget.detail.bvid == bvid && pgcTarget.detail.cid == cid) { "节目集数信息不匹配" }
-            val data = repo.loadTvPgcPlayUrl(pgcTarget, qn).getOrThrow()
+            val data = repo.loadHdPgcPlayUrl(pgcTarget, qn).getOrThrow()
             return data to (data.isPreview == 1)
         }
         val ugc = repo.loadPlayUrl(bvid, cid, qn)
@@ -540,7 +540,7 @@ class VideoDetailViewModel(application: Application) : AndroidViewModel(applicat
      * 自动起播，需要外力（按 OK）才能踢动。
      */
     private fun setPlayerMedia(playUrl: PlayUrlData, resumeMs: Long = 0L): Boolean {
-        val client = if (currentPgc != null) NetworkModule.tvMediaClient else NetworkModule.okHttpClient
+        val client = if (currentPgc != null) NetworkModule.hdClient else NetworkModule.okHttpClient
         val source = PlayerBuilder.buildMediaSource(client, playUrl, _selectedQn.value)
         if (source == null) {
             _state.value = VideoDetailState.Error("无可播放流")

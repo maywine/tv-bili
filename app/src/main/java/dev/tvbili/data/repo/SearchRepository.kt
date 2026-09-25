@@ -7,9 +7,12 @@ import dev.tvbili.net.NetworkModule
 import dev.tvbili.net.WbiKeyManager
 import dev.tvbili.net.WbiUtils
 import kotlinx.coroutines.CancellationException
+import dev.tvbili.data.store.TokenStore
+import dev.tvbili.net.AppSignUtils
+import dev.tvbili.net.hdApiParams
 
 /**
- * 视频沿用 WBI 综合搜索；电影、综艺使用电视影视搜索并按 catalog_id 过滤。
+ * 视频沿用 WBI 综合搜索；电影、综艺使用移动端影视搜索并按 season_type 过滤。
  *
  * 流程：WbiKeyManager.getKeys() → WbiUtils.sign(params, img, sub) → SearchApi.searchAll
  *
@@ -19,7 +22,7 @@ import kotlinx.coroutines.CancellationException
  * - 服务端 code != 0 → require 抛（错误信息透传给上层 State.Error）
  * - data.result 全空或没 video 类目 → 返回 emptyList()（视为「无结果」非错误）
  */
-class SearchRepository(private val tvApi: () -> SearchApi = { NetworkModule.searchApi }) {
+class SearchRepository(private val hdApi: () -> SearchApi = { NetworkModule.hdSearchApi }) {
 
     suspend fun search(keyword: String, scope: SearchScope, page: Int = 1): Result<SearchPage> {
         if (scope == SearchScope.VIDEO) return searchVideos(keyword, page).map { SearchPage(it) }
@@ -28,13 +31,16 @@ class SearchRepository(private val tvApi: () -> SearchApi = { NetworkModule.sear
             val seasonType = requireNotNull(scope.seasonType)
             var currentPage = page
             var result: SearchPage
-            // TV 接口返回混合影视结果；当前页没有目标分类时继续翻页，避免误报“没找到”。
+            // 移动端接口返回混合影视结果；当前页没有目标分类时继续翻页，避免误报“没找到”。
             do {
-                val response = tvApi().searchTvPgc(keyword, currentPage, seasonType)
+                val response = hdApi().searchHdPgc(hdApiParams(
+                    mapOf("keyword" to keyword, "type" to "8", "pn" to currentPage.toString(), "ps" to "20", "highlight" to "0"),
+                    TokenStore.accessToken, TokenStore.tokenAppKey, AppSignUtils.getTimestamp(),
+                ))
                 require(response.code == 0) { "搜索失败：${response.message} (${response.code})" }
                 val data = requireNotNull(response.data) { "搜索接口未返回内容" }
-                val cards = data.modules.flatMap { it.list }.toPgcCards(seasonType)
-                val nextPage = (currentPage + 1).takeIf { currentPage < (data.pageInfo?.tvpgc?.pages ?: 0) }
+                val cards = data.items.toPgcCards(seasonType)
+                val nextPage = (currentPage + 1).takeIf { currentPage < data.pages }
                 result = SearchPage(cards, nextPage)
                 currentPage++
             } while (result.cards.isEmpty() && result.nextPage != null)

@@ -7,13 +7,13 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
 import org.junit.Test
 
-class TvMediaHeadersInterceptorTest {
-    @Test fun `TV headers override both player defaults and generic interceptor`() {
+class HdHeadersInterceptorTest {
+    @Test fun `HD headers override both player defaults and generic interceptor`() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("video"))
             val client = OkHttpClient.Builder()
                 .addInterceptor(HttpHeadersInterceptor())
-                .addInterceptor(TvMediaHeadersInterceptor())
+                .addInterceptor(HdHeadersInterceptor())
                 .build()
             val request = Request.Builder().url(server.url("/preview.mp4"))
                 .header("Referer", "https://www.bilibili.com")
@@ -23,18 +23,18 @@ class TvMediaHeadersInterceptorTest {
                 .build()
             client.newCall(request).execute().use { assertEquals(200, it.code) }
             val recorded = server.takeRequest()
-            assertEquals("Mozilla/5.0 BiliTV/1.8.8", recorded.getHeader("User-Agent"))
+            assertEquals("Mozilla/5.0 BiliDroid/2.0.1", recorded.getHeader("User-Agent"))
             assertNull(recorded.getHeader("Referer"))
             assertNull(recorded.getHeader("Origin"))
             assertEquals("bytes=0-1023", recorded.getHeader("Range"))
         }
     }
 
-    @Test fun `deriving TV client does not change normal video client`() {
+    @Test fun `deriving HD client does not change normal video client`() {
         MockWebServer().use { server ->
             repeat(2) { server.enqueue(MockResponse().setBody("ok")) }
             val web = OkHttpClient.Builder().addInterceptor(HttpHeadersInterceptor()).build()
-            val tv = web.newBuilder().addInterceptor(TvMediaHeadersInterceptor()).build()
+            val tv = web.newBuilder().addInterceptor(HdHeadersInterceptor()).build()
             tv.newCall(Request.Builder().url(server.url("/tv.mp4")).build()).execute().close()
             web.newCall(Request.Builder().url(server.url("/web.m4s")).build()).execute().close()
             assertNull(server.takeRequest().getHeader("Referer"))

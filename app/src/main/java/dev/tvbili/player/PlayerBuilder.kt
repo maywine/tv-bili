@@ -27,8 +27,8 @@ import okhttp3.OkHttpClient
  * 设计要点：
  * - **OkHttpDataSource 复用项目 [okHttpClient]**：cookies / UA / Referer 拦截器自动生效
  *   （不像 BiliPai 单独拉一个 `playbackOkHttpClient`）
- * - 普通视频沿用网页请求头；电视节目的 tvMediaClient 会在拦截器中改用电视 UA，
- *   并移除 Origin / Referer，否则电视 CDN 返回 403。
+ * - 普通视频沿用网页请求头；节目的 hdClient 会在拦截器中改用移动端 UA，
+ *   并移除 Origin / Referer，否则媒体 CDN 拒绝请求。
  * - **MergingMediaSource(video, audio)**：B 站 DASH 是视频/音频两条独立 stream URL，
  *   ProgressiveMediaSource 可分别拉 segmented MP4，MergingMediaSource 合并播放
  * - **DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF**：盒子端不引 ffmpeg 扩展，硬解优先

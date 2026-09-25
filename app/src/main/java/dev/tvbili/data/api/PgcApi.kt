@@ -4,8 +4,8 @@ import dev.tvbili.data.model.PgcIndexResponse
 import dev.tvbili.data.model.PgcPlayUrlResponse
 import dev.tvbili.data.model.PgcRankResponse
 import dev.tvbili.data.model.PgcSeasonDetailResponse
-import dev.tvbili.data.model.TvPgcIndexResponse
-import dev.tvbili.data.model.PlayUrlResponse
+import dev.tvbili.data.model.HdSeasonResponse
+import kotlinx.serialization.json.JsonObject
 import retrofit2.http.GET
 import retrofit2.http.Query
 import retrofit2.http.QueryMap
@@ -13,22 +13,20 @@ import retrofit2.http.QueryMap
 /**
  * PGC（番剧 / 电影 / 综艺 / 国创 / 电视剧 / 纪录片）接口。
  *
- * - [getTvSeasonIndex]：电影、综艺的电视片库
- * - [getSeasonIndex]：网页版索引，电视片库失败时兜底
+ * - [getHdSeasonIndex]：带 HD 客户端参数的电影、综艺片库
+ * - [getHdSeasonDetail]：移动端节目详情，正片位于 modules 的 positive 分组
  * - [getSeasonDetail]：拉单个 season 的剧集 bvid 列表；点 PgcSeason 卡时解析最新一集 bvid
  */
 interface PgcApi {
 
-    @GET("x/tv/playurl")
-    suspend fun getTvPlayUrl(@QueryMap signed: Map<String, String>): PlayUrlResponse
+    @GET("pgc/player/api/playurl")
+    suspend fun getHdPlayUrl(@QueryMap signed: Map<String, String>): JsonObject
 
-    @GET("x/tv/index/v2/pgc")
-    suspend fun getTvSeasonIndex(
-        @Query("category") seasonType: Int,
-        @Query("pn") page: Int = 1,
-        @Query("ps") pageSize: Int = 20,
-        @Query("sort") sort: Int = 8,
-    ): TvPgcIndexResponse
+    @GET("pgc/season/index/result")
+    suspend fun getHdSeasonIndex(@QueryMap signed: Map<String, String>): PgcIndexResponse
+
+    @GET("pgc/view/v2/app/season")
+    suspend fun getHdSeasonDetail(@QueryMap signed: Map<String, String>): HdSeasonResponse
 
     /**
      * 参数集对齐 B 站 web 端实际请求——`pagesize` 而非 `page_size`，且需要 `st`、

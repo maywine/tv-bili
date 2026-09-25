@@ -8,22 +8,24 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PgcSearchRepositoryTest {
-    private class FakeApi(val responses: List<TvPgcSearchResponse>) : SearchApi {
+    private class FakeApi(val responses: List<HdPgcSearchResponse>) : SearchApi {
         val pages = mutableListOf<Int>()
         var error: Exception? = null
         override suspend fun searchAll(signed: Map<String, String>): SearchResponse = error("unexpected video search")
-        override suspend fun searchTvPgc(keyword: String, page: Int, category: Int, searchType: String, order: String, pageSize: Int): TvPgcSearchResponse {
-            assertEquals("tv_pgc", searchType)
+        override suspend fun searchHdPgc(signed: Map<String, String>): HdPgcSearchResponse {
+            assertEquals("8", signed["type"])
+            assertEquals("android_hd", signed["mobi_app"])
             error?.let { throw it }
+            val page = requireNotNull(signed["pn"]).toInt()
             pages += page
             return responses[page - 1]
         }
     }
 
-    private fun response(vararg cards: TvPgcCard, pages: Int = 2) = TvPgcSearchResponse(
-        data = TvPgcSearchData(listOf(TvSearchModule(cards.toList())), TvSearchPageInfo(TvSearchPage(pages))),
+    private fun response(vararg cards: HdPgcSearchItem, pages: Int = 2) = HdPgcSearchResponse(
+        data = HdPgcSearchData(items = cards.toList(), pages = pages),
     )
-    private fun card(id: Long, category: Int) = TvPgcCard(2, id, "节目$id", catalog = TvPgcCatalog(category))
+    private fun card(id: Long, category: Int) = HdPgcSearchItem(seasonId = id, seasonType = category, title = "节目$id")
 
     @Test fun `skip mixed pages until requested category is found`() = runTest {
         val api = FakeApi(listOf(response(card(1, 2)), response(card(2, 7), card(2, 7), card(3, 5))))
@@ -50,7 +52,7 @@ class PgcSearchRepositoryTest {
     }
 
     @Test fun `API errors do not become empty search results`() = runTest {
-        val api = FakeApi(listOf(TvPgcSearchResponse(code = -400, message = "请求错误")))
+        val api = FakeApi(listOf(HdPgcSearchResponse(code = -400, message = "请求错误")))
         assertTrue(SearchRepository { api }.search("电影", SearchScope.CINEMA).isFailure)
     }
 

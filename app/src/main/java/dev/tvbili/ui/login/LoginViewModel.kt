@@ -12,6 +12,9 @@ import dev.tvbili.data.store.TokenStore
 import dev.tvbili.net.AppSignUtils
 import dev.tvbili.net.NetworkModule
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import dev.tvbili.net.hdApiParams
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -27,126 +30,82 @@ sealed interface LoginState {
     data class Error(val message: String) : LoginState
 }
 
-/**
- * TV 端二维码登录 ViewModel。
- *
- * 流程：[startLogin] → [loadTvQr] (生成 QR) → [startPolling] (2s 轮询) →
- *      [TokenStore.saveSession] → emit [LoginState.Success]
- *
- * 关键状态码（poll 接口）：
- * - 0 → 登录成功
- * - 86039 → 未确认（保持 QrReady）
- * - 86090 → 已扫码待确认（emit Scanned）
- * - 86038 → 过期（emit Error）
- */
+/** 使用 HD 客户端身份扫码，令牌与后续请求的 appkey 保持一致。 */
 class LoginViewModel(application: Application) : AndroidViewModel(application) {
-
     private val _state = MutableStateFlow<LoginState>(LoginState.Idle)
     val state: StateFlow<LoginState> = _state.asStateFlow()
-
-    private var authCode: String = ""
-    private var polling: Boolean = false
-    private var currentBitmap: Bitmap? = null
+    private var loginJob: Job? = null
 
     fun startLogin() {
-        val s = _state.value
-        if (s is LoginState.Loading || s is LoginState.QrReady) return
-        loadTvQr()
+        if (loginJob?.isActive == true || _state.value is LoginState.Success) return
+        loadAppQr()
     }
 
-    fun retry() {
-        polling = false
-        loadTvQr()
-    }
+    fun retry() = loadAppQr()
 
-    override fun onCleared() {
-        polling = false
-        super.onCleared()
-    }
+    private fun params(values: Map<String, String> = emptyMap()): Map<String, String> = hdApiParams(
+        values + ("local_id" to (TokenStore.buvid3 ?: "0")), null, null, AppSignUtils.getTimestamp(),
+    )
 
-    private fun loadTvQr() {
-        viewModelScope.launch {
+    private fun loadAppQr() {
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch {
             _state.value = LoginState.Loading
             try {
-                val params = buildTvParams(includeAuthCode = false)
-                val signed = AppSignUtils.signForTvLogin(params)
-                val resp = NetworkModule.passportApi.generateTvQrCode(signed)
-                val data = resp.data
-                    ?: error("TV QR generate failed: code=${resp.code} msg=${resp.message}")
-                val url = data.url ?: error("TV QR url missing")
-                authCode = data.authCode ?: error("TV QR auth_code missing")
-                val bitmap = generateQrBitmap(url)
-                currentBitmap = bitmap
+                val response = NetworkModule.passportApi.generateAppQrCode(params())
+                require(response.code == 0) { "二维码生成失败：${response.message} (${response.code})" }
+                val data = requireNotNull(response.data) { "二维码信息为空" }
+                val authCode = requireNotNull(data.authCode) { "二维码认证信息缺失" }
+                val bitmap = generateQrBitmap(requireNotNull(data.url) { "二维码地址缺失" })
                 _state.value = LoginState.QrReady(bitmap)
-                polling = true
-                startPolling()
+                pollSession(authCode, bitmap)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                Log.e(TAG, "loadTvQr failed", e)
-                _state.value = LoginState.Error(e.message ?: "网络错误")
+                Log.e(TAG, "HD login failed", e)
+                _state.value = LoginState.Error(e.message ?: "登录失败")
             }
         }
     }
 
-    private fun startPolling() {
-        viewModelScope.launch {
-            while (polling) {
-                delay(2000)
-                try {
-                    val params = buildTvParams(includeAuthCode = true)
-                    val signed = AppSignUtils.signForTvLogin(params)
-                    val resp = NetworkModule.passportApi.pollTvQrCode(signed)
-                    when (resp.code) {
-                        0 -> {
-                            val d = resp.data ?: run {
-                                _state.value = LoginState.Error("登录成功但 data 为空")
-                                polling = false
-                                return@launch
-                            }
-                            val cookies = d.cookieInfo?.cookies.orEmpty()
-                            val sess = cookies.firstOrNull { it.name == "SESSDATA" }?.value.orEmpty()
-                            val jct = cookies.firstOrNull { it.name == "bili_jct" }?.value.orEmpty()
-                            if (sess.isEmpty()) {
-                                _state.value = LoginState.Error("登录成功但 SESSDATA 缺失")
-                                polling = false
-                                return@launch
-                            }
-                            TokenStore.saveSession(
-                                context = getApplication(),
-                                sessdata = sess,
-                                biliJct = jct,
-                                accessToken = d.accessToken,
-                                refreshToken = d.refreshToken,
-                                mid = d.mid,
-                            )
-                            polling = false
-                            _state.value = LoginState.Success
-                        }
-                        86039 -> {
-                            // 未确认，保持 QrReady
-                        }
-                        86090 -> {
-                            currentBitmap?.let { _state.value = LoginState.Scanned(it) }
-                        }
-                        86038 -> {
-                            _state.value = LoginState.Error("二维码已过期，请刷新")
-                            polling = false
-                        }
-                        else -> {
-                            Log.w(TAG, "unknown poll code=${resp.code} msg=${resp.message}")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "poll exception (will retry)", e)
+    private suspend fun pollSession(authCode: String, bitmap: Bitmap) {
+        while (true) {
+            delay(2000)
+            val response = try {
+                NetworkModule.passportApi.pollAppQrCode(params(mapOf("auth_code" to authCode)))
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "QR polling request failed", e)
+                continue
+            }
+            when (response.code) {
+                0 -> {
+                    val data = requireNotNull(response.data) { "登录响应为空" }
+                    val cookies = data.cookieInfo?.cookies.orEmpty()
+                    val sess = cookies.firstOrNull { it.name == "SESSDATA" }?.value.orEmpty()
+                    val jct = cookies.firstOrNull { it.name == "bili_jct" }?.value.orEmpty()
+                    require(sess.isNotEmpty() && data.sessionAccessToken.isNotBlank()) { "登录凭据不完整，请重新扫码" }
+                    TokenStore.saveSession(
+                        context = getApplication(), sessdata = sess, biliJct = jct,
+                        accessToken = data.sessionAccessToken, refreshToken = data.sessionRefreshToken,
+                        mid = data.sessionMid, clientAppKey = AppSignUtils.HD_APP_KEY,
+                    )
+                    _state.value = LoginState.Success
+                    return
+                }
+                86039 -> Unit
+                86090 -> _state.value = LoginState.Scanned(bitmap)
+                86038 -> {
+                    _state.value = LoginState.Error("二维码已过期，请刷新")
+                    return
+                }
+                else -> {
+                    _state.value = LoginState.Error("扫码登录失败：${response.message} (${response.code})")
+                    return
                 }
             }
         }
-    }
-
-    private fun buildTvParams(includeAuthCode: Boolean): Map<String, String> = buildMap {
-        put("appkey", AppSignUtils.TV_APP_KEY)
-        put("local_id", "0")
-        put("ts", AppSignUtils.getTimestamp().toString())
-        if (includeAuthCode) put("auth_code", authCode)
     }
 
     private fun generateQrBitmap(content: String): Bitmap {

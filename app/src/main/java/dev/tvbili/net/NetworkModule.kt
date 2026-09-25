@@ -52,9 +52,9 @@ object NetworkModule {
             .build()
     }
 
-    val tvMediaClient: OkHttpClient by lazy {
+    val hdClient: OkHttpClient by lazy {
         okHttpClient.newBuilder()
-            .addInterceptor(TvMediaHeadersInterceptor())
+            .addInterceptor(HdHeadersInterceptor())
             .build()
     }
 
@@ -70,7 +70,7 @@ object NetworkModule {
     val passportApi: PassportApi by lazy {
         Retrofit.Builder()
             .baseUrl("https://passport.bilibili.com/")
-            .client(okHttpClient)
+            .client(hdClient)
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(PassportApi::class.java)
@@ -119,6 +119,18 @@ object NetworkModule {
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
             .create(PgcApi::class.java)
+    }
+
+    val hdPgcApi: PgcApi by lazy {
+        Retrofit.Builder().baseUrl("https://api.bilibili.com/")
+            .client(hdClient).addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build().create(PgcApi::class.java)
+    }
+
+    val hdSearchApi: SearchApi by lazy {
+        Retrofit.Builder().baseUrl("https://app.bilibili.com/")
+            .client(hdClient).addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build().create(SearchApi::class.java)
     }
 
     fun init(context: Context) {

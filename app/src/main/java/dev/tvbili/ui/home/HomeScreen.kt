@@ -35,7 +35,7 @@ fun HomeScreen(
     val selectedLiveAreaId by vm.selectedLiveAreaId.collectAsStateWithLifecycle()
     val pgcOrders by vm.pgcOrders.collectAsStateWithLifecycle()
 
-    // 节目卡由 VM 解析集数信息后导航，保留电视播放所需的 ep_id
+    // 节目卡由 VM 解析集数信息后导航，保留节目播放所需的 ep_id
     LaunchedEffect(Unit) {
         vm.pgcNavigateEvent.collect { onNavigateToPgc(it) }
     }

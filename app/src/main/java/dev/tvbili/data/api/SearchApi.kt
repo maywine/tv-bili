@@ -1,11 +1,10 @@
 package dev.tvbili.data.api
 
 import dev.tvbili.data.model.SearchResponse
-import dev.tvbili.data.model.TvPgcSearchResponse
+import dev.tvbili.data.model.HdPgcSearchResponse
 import retrofit2.http.GET
 import retrofit2.http.Headers
 import retrofit2.http.QueryMap
-import retrofit2.http.Query
 
 /**
  * 搜索端点 —— 走 WBI 签名 + `search.bilibili.com` 域名特定 Header。
@@ -17,15 +16,8 @@ import retrofit2.http.Query
  */
 interface SearchApi {
 
-    @GET("x/tv/search/v2")
-    suspend fun searchTvPgc(
-        @Query("keyword") keyword: String,
-        @Query("page") page: Int = 1,
-        @Query("category") category: Int,
-        @Query("search_type") searchType: String = "tv_pgc",
-        @Query("order") order: String = "totalrank",
-        @Query("pagesize") pageSize: Int = 20,
-    ): TvPgcSearchResponse
+    @GET("x/v2/search/type")
+    suspend fun searchHdPgc(@QueryMap signed: Map<String, String>): HdPgcSearchResponse
 
     @Headers(
         "Origin: https://search.bilibili.com",

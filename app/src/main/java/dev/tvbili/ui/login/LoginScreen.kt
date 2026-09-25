@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import dev.tvbili.data.store.TokenStore
 
 @Composable
 fun LoginScreen(
@@ -52,6 +53,9 @@ fun LoginScreen(
                 color = Color.White,
             )
 
+            if (TokenStore.needsHdLogin) {
+                Text("登录方式已更新，请重新扫码；观看历史会保留。", color = Color.LightGray, fontSize = 16.sp)
+            }
             when (val s = state) {
                 LoginState.Idle, LoginState.Loading -> {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)

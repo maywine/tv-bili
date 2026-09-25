@@ -20,12 +20,12 @@ enum class SectionId(
     RANKING("排行", 0, Kind.RANKING),
     BANGUMI("番剧", 13, Kind.RANKING),
     /**
-     * 电影：电视片库 category=2，返回节目 season 列表，避免混入电影剪辑。
+     * 电影：HD 片库 season_type=2，返回节目 season 列表，避免混入电影剪辑。
      */
     CINEMA("电影", 2, Kind.PGC),
     /**
-     * 综艺：电视片库 category=7。网页版索引仅作故障兜底，两者收录和排序不同。
-     * [rid] 在 Kind.PGC 下表示电视 category / 网页 season_type。
+     * 综艺：HD 片库 season_type=7。保持分类搜索与片库使用同一客户端身份。
+     * [rid] 在 Kind.PGC 下表示season_type。
      */
     VARIETY("综艺", 7, Kind.PGC),
     ANIME_AREA("动画", 1, Kind.RANKING),

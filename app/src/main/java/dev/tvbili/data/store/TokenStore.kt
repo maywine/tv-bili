@@ -8,6 +8,8 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.first
 import java.util.UUID
+import dev.tvbili.net.AppSignUtils
+import dev.tvbili.net.isHdSession
 
 /**
  * 登录凭据 + 设备指纹的持久化存储。
@@ -40,10 +42,16 @@ object TokenStore {
         private set
 
     @Volatile
+    var tokenAppKey: String? = null
+        private set
+
+    @Volatile
     var mid: Long = 0L
         private set
 
-    val isLoggedIn: Boolean get() = !sessdata.isNullOrEmpty()
+    val isLoggedIn: Boolean get() = !sessdata.isNullOrEmpty() && isHdSession(accessToken, tokenAppKey)
+
+    val needsHdLogin: Boolean get() = !sessdata.isNullOrEmpty() && !isLoggedIn
 
     suspend fun bootstrap(context: Context) {
         val prefs = context.tvBiliPrefs.data.first()
@@ -51,6 +59,7 @@ object TokenStore {
         biliJct = prefs[BILI_JCT_KEY]
         accessToken = prefs[ACCESS_TOKEN_KEY]
         refreshToken = prefs[REFRESH_TOKEN_KEY]
+        tokenAppKey = prefs[TOKEN_APP_KEY]
         mid = prefs[MID_KEY] ?: 0L
         buvid3 = prefs[BUVID3_KEY] ?: generateAndSaveBuvid3(context)
     }
@@ -62,18 +71,21 @@ object TokenStore {
         accessToken: String,
         refreshToken: String,
         mid: Long,
+        clientAppKey: String = AppSignUtils.HD_APP_KEY,
     ) {
         this.sessdata = sessdata
         this.biliJct = biliJct
         this.accessToken = accessToken
         this.refreshToken = refreshToken
         this.mid = mid
+        this.tokenAppKey = clientAppKey
         context.tvBiliPrefs.edit { p ->
             p[SESSDATA_KEY] = sessdata
             p[BILI_JCT_KEY] = biliJct
             p[ACCESS_TOKEN_KEY] = accessToken
             p[REFRESH_TOKEN_KEY] = refreshToken
             p[MID_KEY] = mid
+            p[TOKEN_APP_KEY] = clientAppKey
         }
     }
 
@@ -83,12 +95,14 @@ object TokenStore {
         accessToken = null
         refreshToken = null
         mid = 0L
+        tokenAppKey = null
         context.tvBiliPrefs.edit { p ->
             p.remove(SESSDATA_KEY)
             p.remove(BILI_JCT_KEY)
             p.remove(ACCESS_TOKEN_KEY)
             p.remove(REFRESH_TOKEN_KEY)
             p.remove(MID_KEY)
+            p.remove(TOKEN_APP_KEY)
         }
     }
 
@@ -104,6 +118,7 @@ object TokenStore {
     private val BUVID3_KEY = stringPreferencesKey("buvid3")
     private val ACCESS_TOKEN_KEY = stringPreferencesKey("access_token")
     private val REFRESH_TOKEN_KEY = stringPreferencesKey("refresh_token")
+    private val TOKEN_APP_KEY = stringPreferencesKey("token_app_key")
     private val MID_KEY = longPreferencesKey("mid")
 }
 
